@@ -808,51 +808,74 @@ async def approve_prepayment(callback: types.CallbackQuery):
     if callback.from_user.id not in ADMIN_IDS:
         return
     await callback.answer()
-
     parts = callback.data.replace("approve_prepayment_", "").split("_")
     prepayment_id, booking_id = parts[0], parts[1]
 
     cursor.execute("UPDATE prepayments SET status='approved' WHERE id=?", (prepayment_id,))
     conn.commit()
 
-    cursor.execute("SELECT user_id, name, username, phone, service, date, time, total_price FROM bookings WHERE id=?", (booking_id,))
+    cursor.execute("""
+        SELECT user_id, name, username, phone, service, date, time, total_price
+        FROM bookings
+        WHERE id=?
+    """, (booking_id,))
     row = cursor.fetchone()
-    if row:
-        user_id, name, username, phone, service, date, time, total_price = row
 
-        date_obj = datetime.strptime(date, "%d.%m.%Y")
-        day_number = date_obj.strftime("%d")
-        day_names = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
-        day_name = day_names[date_obj.weekday()]
-
-        try:
-            await bot.send_message(
-                user_id,
-                f"✅ Оплата подтверждена!\n\n"
-                f"📅 Дата: {day_number} ({day_name})\n"
-                f"⏰ Время: {time}\n"
-                f"💅 Услуги: {service}\n"
-                f"💰 Итого: {total_price}₽\n\n"
-                "Ждем вас в студии Wenty.Lash! ✨\n"
-                "📍 По адресу ул. Бориса Галушкина 15"
-            )
-        except:
-            pass
-
-        approved_text = (
-            "✅ Запись подтверждена!\n\n"
-            f"👤 Имя: {name}\n"
-            f"🔗 {username or 'Нет'}\n"
-            f"📱 Телефон: {phone}\n"
-            f"💅 Услуги: {service}\n"
-            f"💰 Итого: {total_price}₽\n"
-            f"📅 Дата: {day_number} ({day_name})\n"
-            f"⏰ Время: {time}"
-        )
-        await callback.message.edit_caption(approved_text)
-
-    else:
+    if not row:
         await callback.message.edit_caption("❌ Запись не найдена")
+        return
+
+    user_id, name, username, phone, service, date, time, total_price = row
+    date_obj = datetime.strptime(date, "%d.%m.%Y")
+    day_number = date_obj.strftime("%d")
+    day_names = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+    day_name = day_names[date_obj.weekday()]
+
+    # Уведомление клиенту
+    try:
+        await bot.send_message(
+            user_id,
+            f"✅ Оплата подтверждена!\n\n"
+            f"📅 Дата: {day_number} ({day_name})\n"
+            f"⏰ Время: {time}\n"
+            f"💅 Услуги: {service}\n"
+            f"💰 Итого: {total_price}₽\n\n"
+            "Ждем вас в студии Wenty.Lash! ✨\n"
+            "📍 По адресу ул. Бориса Галушкина 15"
+        )
+    except Exception as e:
+        print(f"[approve_prepayment] Не удалось уведомить клиента {user_id}: {e}")
+
+    approved_text = (
+        "✅ Запись подтверждена!\n\n"
+        f"🧾 ID записи: {booking_id}\n"
+        f"👤 Имя: {name}\n"
+        f"🔗 {username or 'Нет'}\n"
+        f"📱 Телефон: {phone}\n"
+        f"💅 Услуги: {service}\n"
+        f"💰 Итого: {total_price}₽\n"
+        f"📅 Дата: {day_number} ({day_name})\n"
+        f"⏰ Время: {time}\n"
+        f"✅ Подтвердил: @{callback.from_user.username or callback.from_user.id}"
+    )
+
+    # Получаем фото чека, чтобы отправить подробное подтверждение с ним
+    cursor.execute("SELECT photo_file_id FROM prepayments WHERE id=?", (prepayment_id,))
+    prepay_row = cursor.fetchone()
+    photo_file_id = prepay_row[0] if prepay_row else None
+
+    # Всем админам отправляем подробное подтверждение
+    for admin_id in ADMIN_IDS:
+        try:
+            if photo_file_id:
+                await bot.send_photo(admin_id, photo_file_id, caption=approved_text)
+            else:
+                await bot.send_message(admin_id, approved_text)
+        except Exception as e:
+            print(f"[approve_prepayment] Не удалось отправить админу {admin_id}: {e}")
+
+    # Обновляем краткое сообщение с кнопкой
+    await callback.message.edit_caption("✅ Оплата подтверждена. Подробности отправлены администраторам.")
 
 @dp.callback_query(F.data.startswith("reject_prepayment_"))
 async def reject_prepayment(callback: types.CallbackQuery):
@@ -1030,7 +1053,7 @@ async def delete_booking(callback: types.CallbackQuery):
     if row and row[0] == callback.from_user.id:
         name, username, phone, service, date, time = row[1], row[2], row[3], row[4], row[5], row[6]
         cursor.execute("DELETE FROM bookings WHERE id=?", (booking_id,))
-        conn.commit()
+        conn.commit() 
         await callback.message.edit_text("❌ Запись удалена")
         cancel_text = (
             "🚫 Клиент отменил запись!\n\n"
@@ -1350,7 +1373,7 @@ async def service_manage(callback: types.CallbackQuery):
     text = f"💅 {service['name']}\n💰 Цена: {service['price']}₽\n⏱ Время: {format_duration(service.get('duration', 180))}\n📝 Описание: {service.get('description') or 'Нет'}"
     await callback.message.edit_text(text, reply_markup=admin_service_manage_keyboard(service_id))
 
-# ---------- ДОБАВЛЕНИЕ УСЛУГИ ----------
+# ---------- РЕДАКТИРОВАНИЕ УСЛУГИ ----------
 @dp.callback_query(F.data == "service_add")
 async def service_add_start(callback: types.CallbackQuery, state: FSMContext):
     if callback.from_user.id not in ADMIN_IDS:
