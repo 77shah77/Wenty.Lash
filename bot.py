@@ -14,6 +14,41 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
 
+# ---------- СОСТОЯНИЯ ----------
+class Booking(StatesGroup):
+    service = State()
+    date = State()
+    time = State()
+    username = State()
+    phone = State()
+    prepayment = State()
+    confirm = State()
+
+class AdminEdit(StatesGroup):
+    edit_name = State()
+    edit_phone = State()
+
+class AdminBlock(StatesGroup):
+    enter_reason = State()
+
+class AdminService(StatesGroup):
+    add_name = State()
+    add_price = State()
+    add_duration = State()
+    add_desc = State()
+    edit_name = State()
+    edit_price = State()
+    edit_duration = State()
+    edit_desc = State()
+
+class AdminBlockUser(StatesGroup):
+    enter_reason = State()
+
+class AdminPaymentDetails(StatesGroup):
+    edit_phone = State()
+    edit_recipient = State()
+    edit_bank = State()
+
 TOKEN = "8630017788:AAFvwsh7g_x-mm8we18izvEsYXxwwwrXBCI"
 ADMIN_IDS = [995387118, 1455416795]
 
@@ -94,41 +129,6 @@ CREATE TABLE IF NOT EXISTS payment_details(
 cursor.execute("INSERT OR IGNORE INTO payment_details(id, phone, recipient, bank) VALUES (1, '+7 XXX XXX XX XX', 'ФИО получателя', 'Название банка')")
 conn.commit()
 
-# ---------- СОСТОЯНИЯ ----------
-class Booking(StatesGroup):
-    service = State()
-    date = State()
-    time = State()
-    username = State()
-    phone = State()
-    prepayment = State()
-    confirm = State()
-
-class AdminEdit(StatesGroup):
-    edit_name = State()
-    edit_phone = State()
-
-class AdminBlock(StatesGroup):
-    enter_reason = State()
-
-class AdminService(StatesGroup):
-    add_name = State()
-    add_price = State()
-    add_duration = State()
-    add_desc = State()
-    edit_name = State()
-    edit_price = State()
-    edit_duration = State()
-    edit_desc = State()
-
-class AdminBlockUser(StatesGroup):
-    enter_reason = State()
-
-class AdminPaymentDetails(StatesGroup):
-    edit_phone = State()
-    edit_recipient = State()
-    edit_bank = State()
-
 # ---------- УСЛУГИ ----------
 def get_services():
     cursor.execute("SELECT id, name, price, duration, description FROM services ORDER BY id")
@@ -157,7 +157,7 @@ def main_menu():
         ],
         resize_keyboard=True
     )
-
+    
 def phone_keyboard():
     return ReplyKeyboardMarkup(
         keyboard=[
@@ -192,12 +192,11 @@ def confirm_keyboard():
             [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_booking")],
         ]
     )
-    
+
 def prepayment_keyboard():
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="💳 Реквизиты для оплаты", callback_data="show_payment_details")],
-            [InlineKeyboardButton(text="📸 Я отправил скриншот", callback_data="i_sent_screenshot")],
             [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_booking")],
         ]
     )
@@ -366,7 +365,6 @@ def admin_payment_keyboard():
     phone = row[0] if row else "Не указан"
     recipient = row[1] if row else "Не указан"
     bank = row[2] if row else "Не указан"
-    
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text=f"📱 Телефон", callback_data="edit_payment_phone")],
@@ -538,6 +536,7 @@ async def booking_start(message: types.Message, state: FSMContext):
         await message.answer("❌ Услуг пока нет. Обратитесь к администратору.")
         return
     await state.update_data(selected_services=[])
+
     await message.answer("Выберите услуги (можно несколько):", reply_markup=services_keyboard())
     await state.set_state(Booking.service)
 
@@ -694,18 +693,17 @@ async def continue_booking(event, state: FSMContext):
     total_price = sum(SERVICES.get(k, {}).get('price', 0) for k in service_ids if k)
     total_duration = sum(SERVICES.get(k, {}).get('duration', 180) for k in service_ids if k)
 
-    # Предоплата 30%
-    prepayment_amount = total_price // 3
-
+    # Фиксированная предоплата 500₽
+    prepayment_amount = 500
     await state.update_data(total_price=total_price, prepayment_amount=prepayment_amount)
 
     text = (
         f"📋 Предоплата\n\n"
-        f"💰 Сумма предоплаты: {prepayment_amount}₽\n"
-        f"(30% от общей стоимости {total_price}₽)\n\n"
+        f"💰 Сумма предоплаты: {prepayment_amount}₽\n\n"
         f"📅 Дата: {day_number} ({day_name})\n"
         f"⏰ Время: {data['time']}\n\n"
-        "Для подтверждения записи необходимо внести предоплату."
+        "Для подтверждения записи отправь скриншот о переводе.\n\n"
+        "Для просмотра реквизит нажми на кнопку ниже,"
     )
     await msg.answer(text, reply_markup=prepayment_keyboard())
     await state.set_state(Booking.prepayment)
@@ -719,7 +717,7 @@ async def show_payment_details(callback: types.CallbackQuery):
     row = cursor.fetchone()
     phone = row[0] if row else "Не указан"
     recipient = row[1] if row else "Не указан"
-    bank = row[2] if row else "Не указан"
+    bank = row[2] if row else "Не указ"
     
     text = (
         "💳 Реквизиты для предоплаты:\n\n"
@@ -733,7 +731,7 @@ async def show_payment_details(callback: types.CallbackQuery):
 @dp.callback_query(F.data == "i_sent_screenshot")
 async def request_screenshot(callback: types.CallbackQuery):
     await callback.answer()
-    await callback.message.answer("📸 Отправьте скриншот чека об оплате:")
+    await callback.message.answer("📸 Отправьте скриншот чека об оплате: ")
 
 @dp.message(Booking.prepayment, F.photo)
 async def process_prepayment_screenshot(message: types.Message, state: FSMContext):
@@ -753,7 +751,7 @@ async def process_prepayment_screenshot(message: types.Message, state: FSMContex
             "UPDATE bookings SET date=?, time=?, duration=?, total_price=? WHERE id=?",
             (data["date"], data["time"], total_duration, total_price, booking_id)
         )
-        conn.commit()
+        conn.commit() 
     else:
         cursor.execute(
             "INSERT INTO bookings(user_id, name, username, phone, service, service_ids, date, time, duration, total_price) VALUES (?,?,?,?,?,?,?,?,?,?)",
@@ -775,21 +773,23 @@ async def process_prepayment_screenshot(message: types.Message, state: FSMContex
         "После проверки оплаты запись будет подтверждена."
     )
 
-    prepayment_amount = data.get("prepayment_amount", 0)
+    prepayment_amount = data.get("prepayment_amount", 500)
     date_obj = datetime.strptime(data['date'], "%d.%m.%Y")
     day_number = date_obj.strftime("%d")
     day_names = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
     day_name = day_names[date_obj.weekday()]
 
     admin_text = (
-        "💰 Новая предоплата!\n\n"
+        "🔔 Новая запись!\n\n"
         f"👤 Имя: {data['name']}\n"
+        f"🔗 {data.get('username', 'Нет')}\n"
         f"📱 Телефон: {data.get('phone', 'Не указан')}\n"
         f"💅 Услуги: {data['service']}\n"
-        f"💰 Сумма предоплаты: {prepayment_amount}₽\n"
+        f"💰 Итого: {total_price}₽\n"
         f"📅 Дата: {day_number} ({day_name})\n"
         f"⏰ Время: {data['time']}"
     )
+
     for admin_id in ADMIN_IDS:
         try:
             await bot.send_photo(admin_id, photo_file_id, caption=admin_text, reply_markup=admin_prepayment_keyboard(prepayment_id, booking_id))
@@ -802,6 +802,7 @@ async def process_prepayment_screenshot(message: types.Message, state: FSMContex
 async def prepayment_no_photo(message: types.Message):
     await message.answer("❌ Пожалуйста, отправьте фото (скриншот чека)")
 
+# ---------- ПОДТВЕРЖДЕНИЕ ЗАПИСИ ----------
 @dp.callback_query(F.data.startswith("approve_prepayment_"))
 async def approve_prepayment(callback: types.CallbackQuery):
     if callback.from_user.id not in ADMIN_IDS:
@@ -814,10 +815,10 @@ async def approve_prepayment(callback: types.CallbackQuery):
     cursor.execute("UPDATE prepayments SET status='approved' WHERE id=?", (prepayment_id,))
     conn.commit()
 
-    cursor.execute("SELECT user_id, service, date, time, total_price FROM bookings WHERE id=?", (booking_id,))
+    cursor.execute("SELECT user_id, name, username, phone, service, date, time, total_price FROM bookings WHERE id=?", (booking_id,))
     row = cursor.fetchone()
     if row:
-        user_id, service, date, time, total_price = row
+        user_id, name, username, phone, service, date, time, total_price = row
 
         date_obj = datetime.strptime(date, "%d.%m.%Y")
         day_number = date_obj.strftime("%d")
@@ -832,12 +833,26 @@ async def approve_prepayment(callback: types.CallbackQuery):
                 f"⏰ Время: {time}\n"
                 f"💅 Услуги: {service}\n"
                 f"💰 Итого: {total_price}₽\n\n"
-                "Ждем вас в студии Wenty.Lash! ✨"
+                "Ждем вас в студии Wenty.Lash! ✨\n"
+                "📍 По адресу ул. Бориса Галушкина 15"
             )
         except:
             pass
 
-    await callback.message.edit_caption("✅ Оплата подтверждена. Клиент уведомлён.")
+        approved_text = (
+            "✅ Запись подтверждена!\n\n"
+            f"👤 Имя: {name}\n"
+            f"🔗 {username or 'Нет'}\n"
+            f"📱 Телефон: {phone}\n"
+            f"💅 Услуги: {service}\n"
+            f"💰 Итого: {total_price}₽\n"
+            f"📅 Дата: {day_number} ({day_name})\n"
+            f"⏰ Время: {time}"
+        )
+        await callback.message.edit_caption(approved_text)
+
+    else:
+        await callback.message.edit_caption("❌ Запись не найдена")
 
 @dp.callback_query(F.data.startswith("reject_prepayment_"))
 async def reject_prepayment(callback: types.CallbackQuery):
@@ -891,9 +906,13 @@ async def confirm(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
     data = await state.get_data()
     service_ids = data.get("service_ids", "").split(",")
+    selected = data.get("service_ids", "").split(",")
     SERVICES = get_services()
     total_price = sum(SERVICES.get(k, {}).get('price', 0) for k in service_ids if k)
     total_duration = sum(SERVICES.get(k, {}).get('duration', 180) for k in service_ids if k)
+
+    total_price = sum(SERVICES.get(k, {}).get('price', 0) for k in selected if k)
+    total_duration = sum(SERVICES.get(k, {}).get('duration', 180) for k in selected if k)
 
     reschedule_id = data.get("reschedule_booking_id")
 
@@ -915,7 +934,8 @@ async def confirm(callback: types.CallbackQuery, state: FSMContext):
             f"⏰ Время: {data['time']}\n"
             f"💅 Услуги: {data['service']}\n"
             f"💰 Итого: {total_price}₽\n\n"
-            "Ждем вас в студии Wenty.Lash! ✨"
+            "Ждем вас в студии Wenty.Lash! ✨\n"
+            "📍 По адресу ул. Бориса Галушкина 15"
         )
 
         cursor.execute("SELECT name, phone FROM bookings WHERE id=?", (reschedule_id,))
@@ -955,6 +975,7 @@ async def confirm(callback: types.CallbackQuery, state: FSMContext):
             f"💅 Услуги: {data['service']}\n"
             f"💰 Итого: {total_price}₽\n\n"
             "Ждем вас в студии Wenty.Lash! ✨\n"
+            "📍 По адресу ул. Бориса Галушкина 15\n\n"
             "Для новой записи напишите /start"
         )
 
@@ -965,6 +986,7 @@ async def confirm(callback: types.CallbackQuery, state: FSMContext):
             f"📱 Телефон: {data.get('phone', 'Не указан')}\n"
             f"💅 Услуги: {data['service']}\n"
             f"💰 Итого: {total_price}₽\n"
+            f"💰 Итого: {total_price}₽\n\n"
             f"📅 Дата: {data['date']}\n"
             f"⏰ Время: {data['time']}"
         )
@@ -1101,8 +1123,8 @@ async def admin_delete_booking(callback: types.CallbackQuery):
                 f"❌ Ваша запись была отменена администратором!\n\n"
                 f"📅 Дата: {date}\n"
                 f"⏰ Время: {time}\n"
-                f"💅 Услуги: {service}\n\n"
-                "Для новой записи напишите /start"
+                f"💅 Услуги: {service}\n"
+                f"📍 По адресу ул. Бориса Галушкина 15"
             )
             await callback.message.edit_text("✅ Запись удалена\n\nКлиент уведомлён об отмене.")
         except:
@@ -1110,7 +1132,7 @@ async def admin_delete_booking(callback: types.CallbackQuery):
     else:
         await callback.message.edit_text("❌ Запись не найдена")
 
-# ---------- РЕДАКТИРОВАНИЕ (АДМИН) ----------
+# ---------- АДМИН-КЛАВИАТУРЫ ----------
 @dp.callback_query(F.data.startswith("edit_name_"))
 async def admin_edit_name(callback: types.CallbackQuery, state: FSMContext):
     if callback.from_user.id not in ADMIN_IDS:
@@ -1268,7 +1290,7 @@ async def block_user_start(callback: types.CallbackQuery, state: FSMContext):
     user_id = callback.data.replace("block_user_", "")
     await state.update_data(block_user_id=user_id)
     await callback.message.answer("Введите причину блокировки (или /skip чтобы пропустить):")
-    await state.set_state(AdminBlockUser.enter_reason)
+    await state.set_state(AdminBlock.enter_reason)
 
 @dp.message(AdminBlock.enter_reason)
 async def block_user_save(message: types.Message, state: FSMContext):
@@ -1558,26 +1580,11 @@ async def admin_unblock_slot(callback: types.CallbackQuery):
         return
     await callback.answer()
     callback_data = callback.data.replace("unblock_", "")
-    if callback_data.startswith("day_"):
-        date = callback_data.replace("day_", "")
-        cursor.execute("DELETE FROM blocked_slots WHERE date=?", (date,))
-        conn.commit()
-        await callback.message.edit_text(f"✅ Весь день разблокирован: {date}")
-    else:
-        parts = callback_data.split("_")
-        if len(parts) >= 2:
-            cursor.execute("DELETE FROM blocked_slots WHERE date=? AND time=?", (parts[0], parts[1]))
-            conn.commit()
-            await callback.message.edit_text("✅ Слот разблокирован")
-
-@dp.callback_query(F.data == "unblock_all")
-async def admin_unblock_all(callback: types.CallbackQuery):
-    if callback.from_user.id not in ADMIN_IDS:
-        return
-    await callback.answer()
-    cursor.execute("DELETE FROM blocked_slots")
-    conn.commit()
-    await callback.message.edit_text("✅ Все слоты разблокированы", reply_markup=admin_main_keyboard())
+    
+    if callback_data == "all":
+        cursor.execute("DELETE FROM blocked_slots")
+        conn.commit() 
+        await callback.message.edit_text("✅ Все слоты разблокированы", reply_markup=admin_main_keyboard())
 
 # ---------- ЗАПУСК ----------
 async def main():
