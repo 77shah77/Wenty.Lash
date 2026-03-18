@@ -1,6 +1,7 @@
 import asyncio
 import sqlite3
 from datetime import datetime, timedelta
+
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.types import (
@@ -13,6 +14,13 @@ from aiogram.types import (
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
+
+# ---------- НАСТРОЙКИ ----------
+TOKEN = "8630017788:AAFvwsh7g_x-mm8we18izvEsYXxwwwrXBCI"
+ADMIN_IDS = [995387118, 1455416795]
+
+bot = Bot(TOKEN)
+dp = Dispatcher(storage=MemoryStorage())
 
 # ---------- СОСТОЯНИЯ ----------
 class Booking(StatesGroup):
@@ -48,12 +56,6 @@ class AdminPaymentDetails(StatesGroup):
     edit_phone = State()
     edit_recipient = State()
     edit_bank = State()
-
-TOKEN = "8630017788:AAFvwsh7g_x-mm8we18izvEsYXxwwwrXBCI"
-ADMIN_IDS = [995387118, 1455416795]
-
-bot = Bot(TOKEN)
-dp = Dispatcher(storage=MemoryStorage())
 
 # ---------- БАЗА ДАННЫХ ----------
 conn = sqlite3.connect("lash_bookings.db")
@@ -126,7 +128,9 @@ CREATE TABLE IF NOT EXISTS payment_details(
     bank TEXT DEFAULT ''
 )
 """)
-cursor.execute("INSERT OR IGNORE INTO payment_details(id, phone, recipient, bank) VALUES (1, '+7 XXX XXX XX XX', 'ФИО получателя', 'Название банка')")
+cursor.execute(
+    "INSERT OR IGNORE INTO payment_details(id, phone, recipient, bank) VALUES (1, '+7 XXX XXX XX XX', 'ФИО получателя', 'Название банка')"
+)
 conn.commit()
 
 # ---------- УСЛУГИ ----------
@@ -143,7 +147,7 @@ def get_services():
         for r in rows
     }
 
-def format_duration(minutes):
+def format_duration(minutes: int) -> str:
     hours = minutes // 60
     mins = minutes % 60
     if hours > 0 and mins > 0:
@@ -159,9 +163,14 @@ TIME_SLOTS = ["10:00", "13:00", "16:00", "18:00"]
 def main_menu():
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="📅 Записаться")],
-            [KeyboardButton(text="📋 Мои записи")],
-            [KeyboardButton(text="💰 Прайс")],
+            [
+                KeyboardButton(text="📅 Записаться"),
+                KeyboardButton(text="📋 Мои записи")
+            ],
+            [
+                KeyboardButton(text="💰 Прайс"),
+                KeyboardButton(text="❓ Помощь")
+            ]
         ],
         resize_keyboard=True
     )
@@ -202,14 +211,6 @@ def services_keyboard(selected=None):
         buttons.append([InlineKeyboardButton(text="Выберите услуги", callback_data="ignore")])
     buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_menu")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
-
-def confirm_keyboard():
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="✅ Подтвердить", callback_data="confirm_booking")],
-            [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_booking")],
-        ]
-    )
 
 def prepayment_keyboard():
     return InlineKeyboardMarkup(
@@ -576,6 +577,35 @@ async def price(message: types.Message):
         text += f"{v['name']} — {v['price']}₽{duration}\n\n"
     await message.answer(text)
 
+# ---------- ПОМОЩЬ ----------
+@dp.message(F.text == "❓ Помощь")
+async def help_menu(message: types.Message):
+    text = (
+        "🆘 *Центр поддержки Wenty.Lash*\n\n"
+        "Если у вас возник вопрос, выберите подходящий вариант ниже:\n\n"
+        "🔧 *Технические проблемы с ботом*\n"
+        "— ошибки, зависания, некорректная работа\n"
+        "— вопросы по функционалу\n"
+        "Пишите сюда: https://t.me/n_zakirov\n\n"
+        "👑 *Организационные вопросы*\n"
+        "— запись на услуги\n"
+        "— предоплата и реквизиты\n"
+        "— перенос или отмена записи\n"
+        "— консультации по процедурам\n"
+        "Связаться с администратором: @lolitet\n\n"
+        "🤍 Спасибо, что выбираете *Wenty.Lash*"
+    )
+
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🚨 Поддержка бота", url="https://t.me/n_zakirov")],
+            [InlineKeyboardButton(text="👑 Главный администратор", url="https://t.me/lolitet")],
+            [InlineKeyboardButton(text="🤖 Хочу такого же бота", url="https://t.me/n_zakirov")]
+        ]
+    )
+
+    await message.answer(text, reply_markup=keyboard, parse_mode="Markdown")
+
 # ---------- ЗАПИСЬ ----------
 @dp.message(F.text == "📅 Записаться")
 async def booking_start(message: types.Message, state: FSMContext):
@@ -589,7 +619,6 @@ async def booking_start(message: types.Message, state: FSMContext):
         await message.answer("❌ Услуг пока нет. Обратитесь к администратору.")
         return
     await state.update_data(selected_services=[])
-
     await message.answer("Выберите услуги (можно несколько):", reply_markup=services_keyboard())
     await state.set_state(Booking.service)
 
@@ -629,11 +658,15 @@ async def dates_second_half(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data == "block_first_half")
 async def block_first_half(callback: types.CallbackQuery):
+    if callback.from_user.id not in ADMIN_IDS:
+        return
     await callback.answer()
     await callback.message.edit_text("🚫 Выберите день:", reply_markup=admin_block_dates_keyboard("first"))
 
 @dp.callback_query(F.data == "block_second_half")
 async def block_second_half(callback: types.CallbackQuery):
+    if callback.from_user.id not in ADMIN_IDS:
+        return
     await callback.answer()
     await callback.message.edit_text("🚫 Выберите день:", reply_markup=admin_block_dates_keyboard("second"))
 
@@ -678,7 +711,10 @@ async def select_date(callback: types.CallbackQuery, state: FSMContext):
     day_number = date_obj.strftime("%d")
     day_names = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
     day_name = day_names[date_obj.weekday()]
-    await callback.message.edit_text(f"📅 {day_number} ({day_name})\nВыберите время:", reply_markup=time_keyboard(date))
+    await callback.message.edit_text(
+        f"📅 {day_number} ({day_name})\nВыберите время:",
+        reply_markup=time_keyboard(date)
+    )
     await state.set_state(Booking.time)
 
 @dp.callback_query(F.data.startswith("time_"))
@@ -703,7 +739,10 @@ async def select_time(callback: types.CallbackQuery, state: FSMContext):
     if data.get("phone"):
         await continue_booking(callback, state)
     else:
-        await callback.message.answer(f"Имя: {name}\n\nПоделитесь номером телефона:", reply_markup=phone_keyboard())
+        await callback.message.answer(
+            f"Имя: {name}\n\nПоделитесь номером телефона:",
+            reply_markup=phone_keyboard()
+        )
         await state.set_state(Booking.phone)
 
 @dp.callback_query(F.data == "busy")
@@ -767,7 +806,6 @@ async def continue_booking(event, state: FSMContext):
 @dp.callback_query(F.data == "show_payment_details")
 async def show_payment_details(callback: types.CallbackQuery):
     await callback.answer()
-
     cursor.execute("SELECT phone, recipient, bank FROM payment_details WHERE id=1")
     row = cursor.fetchone()
     phone = row[0] if row else "Не указан"
@@ -782,11 +820,6 @@ async def show_payment_details(callback: types.CallbackQuery):
         "После оплаты отправьте скриншот чека."
     )
     await callback.message.answer(text)
-
-@dp.callback_query(F.data == "i_sent_screenshot")
-async def request_screenshot(callback: types.CallbackQuery):
-    await callback.answer()
-    await callback.message.answer("📸 Отправьте скриншот чека об оплате: ")
 
 @dp.message(Booking.prepayment, F.photo)
 async def process_prepayment_screenshot(message: types.Message, state: FSMContext):
@@ -809,7 +842,8 @@ async def process_prepayment_screenshot(message: types.Message, state: FSMContex
         conn.commit()
     else:
         cursor.execute(
-            "INSERT INTO bookings(user_id, name, username, phone, service, service_ids, date, time, duration, total_price) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO bookings(user_id, name, username, phone, service, service_ids, date, time, duration, total_price) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
             (
                 message.from_user.id,
                 data["name"],
@@ -828,7 +862,13 @@ async def process_prepayment_screenshot(message: types.Message, state: FSMContex
 
     cursor.execute(
         "INSERT INTO prepayments(booking_id, user_id, photo_file_id, status, created_at) VALUES (?, ?, ?, ?, ?)",
-        (booking_id, message.from_user.id, photo_file_id, "pending", datetime.now().strftime("%d.%m.%Y %H:%M"))
+        (
+            booking_id,
+            message.from_user.id,
+            photo_file_id,
+            "pending",
+            datetime.now().strftime("%d.%m.%Y %H:%M")
+        )
     )
     conn.commit()
     prepayment_id = cursor.lastrowid
@@ -872,7 +912,7 @@ async def process_prepayment_screenshot(message: types.Message, state: FSMContex
 async def prepayment_no_photo(message: types.Message):
     await message.answer("❌ Пожалуйста, отправьте фото (скриншот чека)")
 
-# ---------- ПОДТВЕРЖДЕНИЕ ЗАПИСИ (АДМИН) ----------
+# ---------- ПОДТВЕРЖДЕНИЕ ПРЕДОПЛАТЫ (АДМИН) ----------
 @dp.callback_query(F.data.startswith("approve_prepayment_"))
 async def approve_prepayment(callback: types.CallbackQuery):
     if callback.from_user.id not in ADMIN_IDS:
@@ -991,19 +1031,15 @@ async def reschedule_start(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.edit_text("📅 Выберите новую дату:", reply_markup=dates_keyboard(half))
     await state.set_state(Booking.date)
 
-# ---------- ПОДТВЕРЖДЕНИЕ ЗАПИСИ (КЛИЕНТ) ----------
+# ---------- ПОДТВЕРЖДЕНИЕ ЗАПИСИ (БЕЗ ПРЕДОПЛАТЫ, ЕСЛИ НУЖНО) ----------
 @dp.callback_query(F.data == "confirm_booking")
 async def confirm(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
     data = await state.get_data()
     service_ids = data.get("service_ids", "").split(",")
-    selected = data.get("service_ids", "").split(",")
     SERVICES = get_services()
     total_price = sum(SERVICES.get(k, {}).get('price', 0) for k in service_ids if k)
     total_duration = sum(SERVICES.get(k, {}).get('duration', 180) for k in service_ids if k)
-
-    total_price = sum(SERVICES.get(k, {}).get('price', 0) for k in selected if k)
-    total_duration = sum(SERVICES.get(k, {}).get('duration', 180) for k in selected if k)
 
     reschedule_id = data.get("reschedule_booking_id")
 
@@ -1049,7 +1085,8 @@ async def confirm(callback: types.CallbackQuery, state: FSMContext):
                 pass
     else:
         cursor.execute(
-            "INSERT INTO bookings(user_id, name, username, phone, service, service_ids, date, time, duration, total_price) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO bookings(user_id, name, username, phone, service, service_ids, date, time, duration, total_price) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
             (
                 callback.from_user.id,
                 data["name"],
@@ -1087,7 +1124,7 @@ async def confirm(callback: types.CallbackQuery, state: FSMContext):
             f"🔗 {data.get('username', 'Нет')}\n"
             f"📱 Телефон: {data.get('phone', 'Не указан')}\n"
             f"💅 Услуги: {data['service']}\n"
-            f"💰 Итого: {total_price}₽\n\n"
+            f"💰 Итого: {total_price}₽\n"
             f"📅 Дата: {data['date']}\n"
             f"⏰ Время: {data['time']}"
         )
@@ -1235,11 +1272,11 @@ async def admin_delete_booking(callback: types.CallbackQuery):
         try:
             await bot.send_message(
                 user_id,
-                f"❌ Ваша запись была отменена администратором!\n\n"
+                "❌ Ваша запись была отменена администратором!\n\n"
                 f"📅 Дата: {date}\n"
                 f"⏰ Время: {time}\n"
                 f"💅 Услуги: {service}\n"
-                f"📍 По адресу ул. Бориса Галушкина 15"
+                "📍 По адресу ул. Бориса Галушкина 15"
             )
             await callback.message.edit_text("✅ Запись удалена\n\nКлиент уведомлён об отмене.")
         except:
@@ -1247,7 +1284,7 @@ async def admin_delete_booking(callback: types.CallbackQuery):
     else:
         await callback.message.edit_text("❌ Запись не найдена")
 
-# ---------- АДМИН: РЕДАКТИРОВАНИЕ ЗАПИСИ ----------
+# ---------- РЕДАКТИРОВАНИЕ ЗАПИСИ (АДМИН) ----------
 @dp.callback_query(F.data.startswith("edit_name_"))
 async def admin_edit_name(callback: types.CallbackQuery, state: FSMContext):
     if callback.from_user.id not in ADMIN_IDS:
@@ -1418,25 +1455,52 @@ async def block_user_start(callback: types.CallbackQuery, state: FSMContext):
 async def block_user_save(message: types.Message, state: FSMContext):
     data = await state.get_data()
     user_id = data.get("block_user_id")
-    if not user_id:
-        return
     reason = message.text if message.text != "/skip" else ""
 
-    cursor.execute("SELECT name, username, phone FROM bookings WHERE user_id=? LIMIT 1", (user_id,))
-    row = cursor.fetchone()
-    name = row[0] if row else "Неизвестно"
-    username = row[1] if row else ""
-    phone = row[2] if row else ""
+    if user_id:
+        cursor.execute("SELECT name, username, phone FROM bookings WHERE user_id=? LIMIT 1", (user_id,))
+        row = cursor.fetchone()
+        name = row[0] if row else "Неизвестно"
+        username = row[1] if row else ""
+        phone = row[2] if row else ""
 
-    try:
-        cursor.execute(
-            "INSERT OR IGNORE INTO blocked_users(user_id, name, username, phone, reason, blocked_at) VALUES (?, ?, ?, ?, ?, ?)",
-            (user_id, name, username, phone, reason, datetime.now().strftime("%d.%m.%Y %H:%M"))
-        )
-        conn.commit()
-        await message.answer(f"✅ Клиент заблокирован:\n\n👤 {name}\nID: {user_id}")
-    except Exception as e:
-        await message.answer(f"❌ Ошибка: {e}")
+        try:
+            cursor.execute(
+                "INSERT OR IGNORE INTO blocked_users(user_id, name, username, phone, reason, blocked_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    user_id,
+                    name,
+                    username,
+                    phone,
+                    reason,
+                    datetime.now().strftime("%d.%m.%Y %H:%M")
+                )
+            )
+            conn.commit()
+            await message.answer(f"✅ Клиент заблокирован:\n\n👤 {name}\nID: {user_id}")
+        except Exception as e:
+            await message.answer(f"❌ Ошибка: {e}")
+    else:
+        # это блокировка слота/дня
+        date = data["block_date"]
+        reason = message.text if message.text != "/skip" else ""
+        if data.get("block_single"):
+            time = data["block_time"]
+            cursor.execute(
+                "INSERT OR IGNORE INTO blocked_slots(date, time, reason) VALUES (?, ?, ?)",
+                (date, time, reason)
+            )
+            conn.commit()
+            await message.answer(f"✅ Слот заблокирован:\n📅 {date}\n⏰ {time}\n📝 {reason}")
+        else:
+            for t in TIME_SLOTS:
+                cursor.execute(
+                    "INSERT OR IGNORE INTO blocked_slots(date, time, reason) VALUES (?, ?, ?)",
+                    (date, t, reason)
+                )
+            conn.commit()
+            await message.answer(f"✅ Заблокирован весь день:\n📅 {date}\n📝 {reason}")
 
     await state.clear()
 
@@ -1448,7 +1512,10 @@ async def unblock_user(callback: types.CallbackQuery):
     user_id = callback.data.replace("unblock_user_", "")
     cursor.execute("DELETE FROM blocked_users WHERE user_id=?", (user_id,))
     conn.commit()
-    await callback.message.edit_text(f"✅ Клиент разблокирован (ID: {user_id})", reply_markup=admin_users_keyboard())
+    await callback.message.edit_text(
+        f"✅ Клиент разблокирован (ID: {user_id})",
+        reply_markup=admin_users_keyboard()
+    )
 
 # ---------- АДМИН-ПАНЕЛЬ УСЛУГ ----------
 @dp.callback_query(F.data == "admin_services")
@@ -1526,16 +1593,13 @@ async def service_add_desc(message: types.Message, state: FSMContext):
         )
         conn.commit()
         await message.answer(
-            f"✅ Услуга добавлена!\n\n"
-            f"💅 {name}\n"
-            f"💰 {price}₽\n"
-            f"⏱ {format_duration(duration)}"
+            f"✅ Услуга добавлена!\n\n💅 {name}\n💰 {price}₽\n⏱ {format_duration(duration)}"
         )
     except sqlite3.IntegrityError:
         await message.answer("❌ Услуга с таким названием уже существует")
     await state.clear()
 
-# ---------- РЕДАКТИРОВАНИЕ УСЛУГИ ----------
+# ---------- РЕДАКТИРОВАНИЕ УСЛУГ ----------
 @dp.callback_query(F.data.startswith("service_edit_name_"))
 async def service_edit_name_start(callback: types.CallbackQuery, state: FSMContext):
     if callback.from_user.id not in ADMIN_IDS:
@@ -1616,10 +1680,7 @@ async def service_edit_desc_start(callback: types.CallbackQuery, state: FSMConte
 async def service_edit_desc_save(message: types.Message, state: FSMContext):
     data = await state.get_data()
     desc = "" if message.text == "/skip" else message.text
-    cursor.execute(
-        "UPDATE services SET description=? WHERE id=?",
-        (desc, data["edit_service_id"])
-    )
+    cursor.execute("UPDATE services SET description=? WHERE id=?", (desc, data["edit_service_id"]))
     conn.commit()
     await message.answer("✅ Описание изменено")
     await state.clear()
@@ -1680,32 +1741,6 @@ async def admin_block_time(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.answer(f"Введите причину блокировки для {date} {time}:")
     await state.set_state(AdminBlock.enter_reason)
 
-@dp.message(AdminBlock.enter_reason)
-async def admin_block_save(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    date = data.get("block_date")
-    if not date:
-        return
-    reason = message.text if message.text != "/skip" else ""
-
-    if data.get("block_single"):
-        time = data["block_time"]
-        cursor.execute(
-            "INSERT OR IGNORE INTO blocked_slots(date, time, reason) VALUES (?, ?, ?)",
-            (date, time, reason)
-        )
-        conn.commit()
-        await message.answer(f"✅ Слот заблокирован:\n📅 {date}\n⏰ {time}\n📝 {reason}")
-    else:
-        for t in TIME_SLOTS:
-            cursor.execute(
-                "INSERT OR IGNORE INTO blocked_slots(date, time, reason) VALUES (?, ?, ?)",
-                (date, t, reason)
-            )
-        conn.commit()
-        await message.answer(f"✅ Заблокирован весь день:\n📅 {date}\n📝 {reason}")
-    await state.clear()
-
 @dp.callback_query(F.data.startswith("block_all_"))
 async def block_all(callback: types.CallbackQuery, state: FSMContext):
     if callback.from_user.id not in ADMIN_IDS:
@@ -1739,19 +1774,20 @@ async def admin_unblock_slot(callback: types.CallbackQuery):
         cursor.execute("DELETE FROM blocked_slots")
         conn.commit()
         await callback.message.edit_text("✅ Все слоты разблокированы", reply_markup=admin_main_keyboard())
-    elif callback_data.startswith("day_"):
+        return
+
+    if "_" in callback_data:
+        # формат: дата_время
+        date, time = callback_data.split("_")
+        cursor.execute("DELETE FROM blocked_slots WHERE date=? AND time=?", (date, time))
+        conn.commit()
+        await callback.message.edit_text(f"✅ Слот {date} {time} разблокирован", reply_markup=admin_unblock_keyboard())
+    else:
+        # формат: day_дата
         date = callback_data.replace("day_", "")
         cursor.execute("DELETE FROM blocked_slots WHERE date=?", (date,))
         conn.commit()
-        await callback.message.edit_text(f"✅ День {date} разблокирован", reply_markup=admin_main_keyboard())
-    else:
-        try:
-            date, time = callback_data.split("_")
-            cursor.execute("DELETE FROM blocked_slots WHERE date=? AND time=?", (date, time))
-            conn.commit()
-            await callback.message.edit_text(f"✅ Слот {date} {time} разблокирован", reply_markup=admin_main_keyboard())
-        except:
-            await callback.message.edit_text("❌ Ошибка формата данных", reply_markup=admin_main_keyboard())
+        await callback.message.edit_text(f"✅ День {date} разблокирован", reply_markup=admin_unblock_keyboard())
 
 # ---------- ЗАПУСК ----------
 async def main():
