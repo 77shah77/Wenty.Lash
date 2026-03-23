@@ -599,7 +599,7 @@ async def help_menu(message: types.Message):
         inline_keyboard=[
             [InlineKeyboardButton(text="🚨 Поддержка бота", url="https://t.me/n_zakirov")],
             [InlineKeyboardButton(text="👑 Главный администратор", url="https://t.me/lolitet")],
-            [InlineKeyboardButton(text="🤖 Хочу такого же бота", url="https://t.me/n_zakirov")]
+            [InlineKeyboardButton(text="🤖 Хочу такого же бота", url="https://t.me/RequestForABot")]
         ]
     )
     await message.answer(text, reply_markup=keyboard, parse_mode="HTML")
