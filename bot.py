@@ -1,10 +1,9 @@
 import asyncio
 import sqlite3
-import logging
+import calendar
 import os
 from datetime import datetime, timedelta
 from contextlib import contextmanager
-from typing import Optional, Dict, List, Any
 
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
@@ -18,47 +17,68 @@ from aiogram.types import (
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.exceptions import TelegramBadRequest
-
-# Настройка логирования
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
 
 # ---------- НАСТРОЙКИ ----------
-# ТОКЕН загружается из переменных окружения для безопасности
+# Токен лучше брать из переменных окружения, но оставим и проверку на хардкод для совместимости
 TOKEN = os.getenv("BOT_TOKEN", "8630017788:AAFvwsh7g_x-mm8we18izvEsYXxwwwrXBCI")
 ADMIN_IDS = [995387118, 1455416795]
 
-# Проверка токена
-if TOKEN == "8630017788:AAFvwsh7g_x-mm8we18izvEsYXxwwwrXBCI":
-    logger.warning("⚠️ ВНИМАНИЕ: Используется токен по умолчанию! Установите переменную окружения BOT_TOKEN")
-
-bot = Bot(token=TOKEN)
+bot = Bot(TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
+# ---------- СОСТОЯНИЯ ----------
+class Booking(StatesGroup):
+    service = State()
+    date = State()
+    time = State()
+    username = State()
+    phone = State()
+    prepayment = State()
+    confirm = State()
+
+class AdminEdit(StatesGroup):
+    edit_name = State()
+    edit_phone = State()
+
+class AdminBlock(StatesGroup):
+    enter_reason = State()
+
+class AdminService(StatesGroup):
+    add_name = State()
+    add_price = State()
+    add_duration = State()
+    add_desc = State()
+    edit_name = State()
+    edit_price = State()
+    edit_duration = State()
+    edit_desc = State()
+
+class AdminBlockUser(StatesGroup):
+    enter_reason = State()
+
+class AdminPaymentDetails(StatesGroup):
+    edit_phone = State()
+    edit_recipient = State()
+    edit_bank = State()
+
 # ---------- БАЗА ДАННЫХ ----------
-DB_PATH = "lash_bookings.db"
+DB_NAME = "lash_bookings.db"
 
 @contextmanager
 def get_db_connection():
-    """Контекстный менеджер для безопасной работы с БД"""
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_NAME)
     conn.row_factory = sqlite3.Row
     try:
         yield conn
         conn.commit()
     except Exception as e:
         conn.rollback()
-        logger.error(f"Ошибка БД: {e}")
+        print(f"DB Error: {e}")
         raise
     finally:
         conn.close()
 
 def init_database():
-    """Инициализация таблиц БД"""
     with get_db_connection() as conn:
         cursor = conn.cursor()
         
@@ -130,63 +150,38 @@ def init_database():
         )
         """)
         
+        # Таблица настроек для управления месяцами
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS settings(
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+        """)
+        
+        # Инициализация настройки следующего месяца (по умолчанию закрыт)
+        cursor.execute(
+            "INSERT OR IGNORE INTO settings(key, value) VALUES ('next_month_open', 'false')"
+        )
+        
         cursor.execute(
             "INSERT OR IGNORE INTO payment_details(id, phone, recipient, bank) VALUES (1, '+7 XXX XXX XX XX', 'ФИО получателя', 'Название банка')"
         )
-        
-        logger.info("База данных инициализирована")
 
-# Инициализация БД при старте
+# Инициализируем БД при старте
 init_database()
 
-# ---------- СОСТОЯНИЯ ----------
-class Booking(StatesGroup):
-    service = State()
-    date = State()
-    time = State()
-    username = State()
-    phone = State()
-    prepayment = State()
-    confirm = State()
-
-class AdminEdit(StatesGroup):
-    edit_name = State()
-    edit_phone = State()
-
-class AdminBlock(StatesGroup):
-    enter_reason = State()
-
-class AdminService(StatesGroup):
-    add_name = State()
-    add_price = State()
-    add_duration = State()
-    add_desc = State()
-    edit_name = State()
-    edit_price = State()
-    edit_duration = State()
-    edit_desc = State()
-
-class AdminBlockUser(StatesGroup):
-    enter_reason = State()
-
-class AdminPaymentDetails(StatesGroup):
-    edit_phone = State()
-    edit_recipient = State()
-    edit_bank = State()
-
 # ---------- УСЛУГИ ----------
-def get_services() -> Dict[str, Dict[str, Any]]:
-    """Получение списка услуг из БД"""
+def get_services():
     with get_db_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT id, name, price, duration, description FROM services ORDER BY id")
         rows = cursor.fetchall()
         return {
-            str(r["id"]): {
-                "name": r["name"],
-                "price": r["price"],
-                "duration": r["duration"] if r["duration"] else 180,
-                "description": r["description"] if r["description"] else ""
+            str(r['id']): {
+                "name": r['name'],
+                "price": r['price'],
+                "duration": r['duration'] if r['duration'] else 180,
+                "description": r['description'] if r['description'] else ""
             }
             for r in rows
         }
@@ -207,14 +202,8 @@ TIME_SLOTS = ["10:00", "13:00", "16:00", "18:00"]
 def main_menu():
     return ReplyKeyboardMarkup(
         keyboard=[
-            [
-                KeyboardButton(text="📅 Записаться"),
-                KeyboardButton(text="📋 Мои записи")
-            ],
-            [
-                KeyboardButton(text="💰 Прайс"),
-                KeyboardButton(text="❓ Помощь")
-            ]
+            [KeyboardButton(text="📅 Записаться"), KeyboardButton(text="📋 Мои записи")],
+            [KeyboardButton(text="💰 Прайс"), KeyboardButton(text="❓ Помощь")]
         ],
         resize_keyboard=True
     )
@@ -273,54 +262,139 @@ def admin_prepayment_keyboard(prepayment_id, booking_id):
         ]
     )
 
+def is_next_month_open():
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT value FROM settings WHERE key='next_month_open'")
+        row = cursor.fetchone()
+        return row and row['value'] == 'true'
+
 def dates_keyboard(half="first"):
     buttons = []
     today = datetime.now()
-    current_day = today.day
+    days_in_month = calendar.monthrange(today.year, today.month)[1]
+    
+    # Определяем диапазон дней для текущей половины
     if half == "first":
-        start_day = current_day + 2
-        end_day = min(15, 28)
+        start_day = today.day + 2
+        end_day = min(15, days_in_month)
     else:
-        start_day = max(16, current_day + 2)
-        end_day = 28
-    days_to_show = end_day - start_day + 1
+        start_day = max(16, today.day + 2)
+        end_day = days_in_month
+
+    # Если вторая половина пуста (например, сегодня 20 число), переходим к следующему месяцу?
+    # Нет, просто показываем что есть. Логика переключения месяцев ниже.
+    
     row = []
-    for i in range(min(days_to_show, 14)):
-        date = today + timedelta(days=i + 2)
-        if half == "first" and date.day > 15:
-            continue
-        if half == "second" and date.day <= 15:
-            continue
-        day_number = date.strftime("%d")
-        day_names = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
-        day_name = day_names[date.weekday()]
-        date_str = date.strftime("%d.%m.%Y")
-        cursor.execute("SELECT COUNT(*) FROM bookings WHERE date=?", (date_str,))
-        bookings_count = cursor.fetchone()[0]
-        cursor.execute("SELECT COUNT(*) FROM blocked_slots WHERE date=?", (date_str,))
-        blocked_count = cursor.fetchone()[0]
+    current_date = today
+    
+    # Генерируем дни для текущей половины текущего месяца
+    for day in range(start_day, end_day + 1):
+        try:
+            date_obj = today.replace(day=day)
+        except ValueError:
+            continue # На случай ошибок с днями
+            
+        date_str = date_obj.strftime("%d.%m.%Y")
+        
+        # Проверка доступности слотов
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM bookings WHERE date=?", (date_str,))
+            bookings_count = cursor.fetchone()[0]
+            cursor.execute("SELECT COUNT(*) FROM blocked_slots WHERE date=?", (date_str,))
+            blocked_count = cursor.fetchone()[0]
+        
         available = len(TIME_SLOTS) - bookings_count - blocked_count
         if available > 0:
+            day_number = date_obj.strftime("%d")
+            day_names = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+            day_name = day_names[date_obj.weekday()]
             row.append(InlineKeyboardButton(text=f"{day_number} ({day_name})", callback_data=f"date_{date_str}"))
+        
         if len(row) == 4:
             buttons.append(row)
             row = []
+    
     if row:
         buttons.append(row)
+
+    # Навигация между половинами ИЛИ следующий месяц
     nav_row = []
+    
     if half == "first":
-        nav_row.append(InlineKeyboardButton(text="📅 16-31 >>", callback_data="dates_second_half"))
+        # Если есть дни во второй половине, показываем кнопку перехода
+        if end_day < days_in_month or (days_in_month >= 16 and today.day < 16):
+             nav_row.append(InlineKeyboardButton(text="📅 16-конец >>", callback_data="dates_second_half"))
     else:
-        nav_row.append(InlineKeyboardButton(text="<< 1-15", callback_data="dates_first_half"))
-    buttons.append(nav_row)
+        # Мы во второй половине. Проверяем, открыт ли следующий месяц
+        if is_next_month_open():
+            # Кнопка перехода на 1 число следующего месяца
+            next_month_date = today.replace(day=1) + timedelta(days=days_in_month + 1) # Грубый хак, лучше через replace
+            # Правильный расчет первого дня след месяца:
+            if today.month == 12:
+                next_month_start = today.replace(year=today.year+1, month=1, day=1)
+            else:
+                next_month_start = today.replace(month=today.month+1, day=1)
+            
+            nav_row.append(InlineKeyboardButton(text=f"📅 {next_month_start.strftime('%B')} >>", callback_data="dates_next_month"))
+        else:
+            nav_row.append(InlineKeyboardButton(text="🔒 След. месяц закрыт", callback_data="ignore"))
+
+    if nav_row:
+        buttons.append(nav_row)
+        
     buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_service")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
+def dates_next_month_keyboard():
+    buttons = []
+    today = datetime.now()
+    # Расчет первого дня следующего месяца
+    if today.month == 12:
+        next_month_start = today.replace(year=today.year+1, month=1, day=1)
+        days_in_next_month = calendar.monthrange(today.year+1, 1)[1]
+    else:
+        next_month_start = today.replace(month=today.month+1, day=1)
+        days_in_next_month = calendar.monthrange(today.year, today.month+1)[1]
+
+    row = []
+    for day in range(1, days_in_next_month + 1):
+        date_obj = next_month_start.replace(day=day)
+        date_str = date_obj.strftime("%d.%m.%Y")
+        
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM bookings WHERE date=?", (date_str,))
+            bookings_count = cursor.fetchone()[0]
+            cursor.execute("SELECT COUNT(*) FROM blocked_slots WHERE date=?", (date_str,))
+            blocked_count = cursor.fetchone()[0]
+        
+        available = len(TIME_SLOTS) - bookings_count - blocked_count
+        if available > 0:
+            day_number = date_obj.strftime("%d")
+            day_names = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+            day_name = day_names[date_obj.weekday()]
+            row.append(InlineKeyboardButton(text=f"{day_number} ({day_name})", callback_data=f"date_{date_str}"))
+        
+        if len(row) == 4:
+            buttons.append(row)
+            row = []
+    
+    if row:
+        buttons.append(row)
+    
+    buttons.append([InlineKeyboardButton(text="<< Назад к текущему", callback_data="dates_first_half")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
 def time_keyboard(date):
-    cursor.execute("SELECT time FROM bookings WHERE date=?", (date,))
-    busy = [x[0] for x in cursor.fetchall()]
-    cursor.execute("SELECT time FROM blocked_slots WHERE date=?", (date,))
-    blocked = [x[0] for x in cursor.fetchall()]
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT time FROM bookings WHERE date=?", (date,))
+        busy = [x['time'] for x in cursor.fetchall()]
+        cursor.execute("SELECT time FROM blocked_slots WHERE date=?", (date,))
+        blocked = [x['time'] for x in cursor.fetchall()]
+    
     is_day_blocked = len(blocked) >= len(TIME_SLOTS)
     buttons = []
     row = []
@@ -350,6 +424,7 @@ def my_booking_keyboard(booking_id):
 
 # ---------- АДМИН-КЛАВИАТУРЫ ----------
 def admin_main_keyboard():
+    next_month_status = "🔓 Открыть" if not is_next_month_open() else "🔒 Закрыть"
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="📅 Записи по дням", callback_data="admin_by_date")],
@@ -358,7 +433,8 @@ def admin_main_keyboard():
             [InlineKeyboardButton(text="💅 Управление услугами", callback_data="admin_services")],
             [InlineKeyboardButton(text="💳 Реквизиты оплаты", callback_data="admin_payment_details")],
             [InlineKeyboardButton(text="🚫 Заблокировать слот", callback_data="admin_block")],
-            [InlineKeyboardButton(text="✅ Разблокировать слоты", callback_data="admin_unblock")]
+            [InlineKeyboardButton(text="✅ Разблокировать слоты", callback_data="admin_unblock")],
+            [InlineKeyboardButton(text=f"{next_month_status} след. месяц", callback_data="toggle_next_month")]
         ]
     )
 
@@ -403,8 +479,11 @@ def admin_dates_keyboard():
     for i in range(2, 9):
         date = datetime.now() + timedelta(days=i)
         date_str = date.strftime("%d.%m.%Y")
-        cursor.execute("SELECT COUNT(*) FROM bookings WHERE date=?", (date_str,))
-        bookings_count = cursor.fetchone()[0]
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM bookings WHERE date=?", (date_str,))
+            bookings_count = cursor.fetchone()[0]
+        
         day_names = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
         day_name = day_names[date.weekday()]
         count_text = f" ({bookings_count})" if bookings_count > 0 else ""
@@ -433,11 +512,14 @@ def admin_booking_keyboard(booking_id):
     )
 
 def admin_payment_keyboard():
-    cursor.execute("SELECT phone, recipient, bank FROM payment_details WHERE id=1")
-    row = cursor.fetchone()
-    phone = row[0] if row else "Не указан"
-    recipient = row[1] if row else "Не указан"
-    bank = row[2] if row else "Не указан"
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT phone, recipient, bank FROM payment_details WHERE id=1")
+        row = cursor.fetchone()
+    
+    phone = row['phone'] if row else "Не указан"
+    recipient = row['recipient'] if row else "Не указан"
+    bank = row['bank'] if row else "Не указан"
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="📱 Телефон", callback_data="edit_payment_phone")],
@@ -448,12 +530,16 @@ def admin_payment_keyboard():
     )
 
 def admin_users_keyboard():
-    cursor.execute("SELECT DISTINCT user_id, name, username, phone FROM bookings ORDER BY id DESC")
-    rows = cursor.fetchall()
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT DISTINCT user_id, name, username, phone FROM bookings ORDER BY id DESC")
+        rows = cursor.fetchall()
+    
     if not rows:
         return None
     buttons = []
-    for user_id, name, username, phone in rows:
+    for user in rows:
+        user_id, name, username, phone = user['user_id'], user['name'], user['username'], user['phone']
         cursor.execute("SELECT id FROM blocked_users WHERE user_id=?", (user_id,))
         is_blocked = cursor.fetchone()
         prefix = "🚫 " if is_blocked else ""
@@ -469,8 +555,11 @@ def admin_users_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 def admin_user_keyboard(user_id):
-    cursor.execute("SELECT id FROM blocked_users WHERE user_id=?", (user_id,))
-    is_blocked = cursor.fetchone()
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM blocked_users WHERE user_id=?", (user_id,))
+        is_blocked = cursor.fetchone()
+    
     buttons = []
     if is_blocked:
         buttons.append([InlineKeyboardButton(text="✅ Разблокировать", callback_data=f"unblock_user_{user_id}")])
@@ -480,12 +569,16 @@ def admin_user_keyboard(user_id):
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 def admin_blocked_users_keyboard():
-    cursor.execute("SELECT user_id, name, reason FROM blocked_users ORDER BY id DESC")
-    rows = cursor.fetchall()
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT user_id, name, reason FROM blocked_users ORDER BY id DESC")
+        rows = cursor.fetchall()
+    
     if not rows:
         return None
     buttons = []
-    for user_id, name, reason in rows:
+    for user in rows:
+        user_id, name, reason = user['user_id'], user['name'], user['reason']
         display_reason = f" ({reason[:15]}...)" if reason and len(reason) > 15 else f" ({reason})" if reason else ""
         buttons.append([
             InlineKeyboardButton(
@@ -499,24 +592,28 @@ def admin_blocked_users_keyboard():
 def admin_block_dates_keyboard(half="first"):
     buttons = []
     today = datetime.now()
-    current_day = today.day
+    days_in_month = calendar.monthrange(today.year, today.month)[1]
+    
     if half == "first":
-        start_day = current_day + 2
-        end_day = min(15, 28)
+        start_day = today.day + 2
+        end_day = min(15, days_in_month)
     else:
-        start_day = max(16, current_day + 2)
-        end_day = 28
-    days_to_show = end_day - start_day + 1
+        start_day = max(16, today.day + 2)
+        end_day = days_in_month
+
     row = []
-    for i in range(min(days_to_show, 14)):
-        date = today + timedelta(days=i + 2)
-        if half == "first" and date.day > 15:
+    for day in range(start_day, end_day + 1):
+        try:
+            date_obj = today.replace(day=day)
+        except ValueError:
             continue
-        if half == "second" and date.day <= 15:
-            continue
-        date_str = date.strftime("%d.%m.%Y")
-        cursor.execute("SELECT COUNT(*) FROM blocked_slots WHERE date=?", (date_str,))
-        blocked_count = cursor.fetchone()[0]
+        date_str = date_obj.strftime("%d.%m.%Y")
+        
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM blocked_slots WHERE date=?", (date_str,))
+            blocked_count = cursor.fetchone()[0]
+        
         is_blocked = blocked_count >= len(TIME_SLOTS)
         prefix = "🚫 " if is_blocked else ""
         row.append(
@@ -530,20 +627,26 @@ def admin_block_dates_keyboard(half="first"):
             row = []
     if row:
         buttons.append(row)
+    
     nav_row = []
     if half == "first":
-        nav_row.append(InlineKeyboardButton(text="📅 16-31 >>", callback_data="block_second_half"))
+        nav_row.append(InlineKeyboardButton(text="📅 16-конец >>", callback_data="block_second_half"))
     else:
         nav_row.append(InlineKeyboardButton(text="<< 1-15", callback_data="block_first_half"))
-    buttons.append(nav_row)
+    
+    if nav_row:
+        buttons.append(nav_row)
     buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 def admin_block_times_keyboard(date):
-    cursor.execute("SELECT time FROM bookings WHERE date=?", (date,))
-    busy = [x[0] for x in cursor.fetchall()]
-    cursor.execute("SELECT time FROM blocked_slots WHERE date=?", (date,))
-    blocked = [x[0] for x in cursor.fetchall()]
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT time FROM bookings WHERE date=?", (date,))
+        busy = [x['time'] for x in cursor.fetchall()]
+        cursor.execute("SELECT time FROM blocked_slots WHERE date=?", (date,))
+        blocked = [x['time'] for x in cursor.fetchall()]
+    
     is_day_blocked = len(blocked) >= len(TIME_SLOTS)
     buttons = []
     row = []
@@ -568,12 +671,16 @@ def admin_block_times_keyboard(date):
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 def admin_unblock_keyboard():
-    cursor.execute("SELECT DISTINCT date FROM blocked_slots ORDER BY date")
-    rows = cursor.fetchall()
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT DISTINCT date FROM blocked_slots ORDER BY date")
+        rows = cursor.fetchall()
+    
     if not rows:
         return None
     buttons = []
-    for (date,) in rows:
+    for row in rows:
+        date = row['date']
         cursor.execute("SELECT COUNT(*) FROM blocked_slots WHERE date=?", (date,))
         count = cursor.fetchone()[0]
         if count >= len(TIME_SLOTS):
@@ -585,7 +692,9 @@ def admin_unblock_keyboard():
             ])
         else:
             cursor.execute("SELECT time, reason FROM blocked_slots WHERE date=?", (date,))
-            for time, reason in cursor.fetchall():
+            slots = cursor.fetchall()
+            for slot in slots:
+                time, reason = slot['time'], slot['reason']
                 display_reason = reason[:15] + "..." if len(reason) > 15 else reason
                 buttons.append([
                     InlineKeyboardButton(
@@ -600,6 +709,18 @@ def admin_unblock_keyboard():
 # ---------- START ----------
 @dp.message(Command("start"))
 async def start(message: types.Message):
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM blocked_users WHERE user_id=?", (message.from_user.id,))
+        if cursor.fetchone():
+            await message.answer("❌ К сожалению, вы не можете записаться. Свяжитесь с администратором.")
+            return
+
+    SERVICES = get_services()
+    if not SERVICES:
+        await message.answer("❌ Услуг пока нет. Обратитесь к администратору.")
+        return
+    
     await message.answer(
         "✨ Добро пожаловать в Wenty.Lash ✨\n\n"
         "Профессиональное наращивание ресниц\n"
@@ -621,7 +742,7 @@ async def price(message: types.Message):
         text += f"{v['name']} — {v['price']}₽{duration}\n\n"
     await message.answer(text)
 
-# ---------- ПОДМЩЬ ----------
+# ---------- ПОМОЩЬ ----------
 @dp.message(F.text == "❓ Помощь")
 async def help_menu(message: types.Message):
     text = (
@@ -630,7 +751,7 @@ async def help_menu(message: types.Message):
         "🔧 <b>Технические проблемы с ботом</b>\n"
         "— ошибки, зависания, некорректная работа\n"
         "— вопросы по функционалу\n"
-        "Пишите сюда: https://t.me/n_zakirov\n\n"
+        "Пишите сюда: https://t.me/n_zakirov \n\n"
         "👑 <b>Организационные вопросы</b>\n"
         "— запись на услуги\n"
         "— предоплата и реквизиты\n"
@@ -641,9 +762,9 @@ async def help_menu(message: types.Message):
     )
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="🚨 Поддержка бота", url="https://t.me/n_zakirov")],
-            [InlineKeyboardButton(text="👑 Главный администратор", url="https://t.me/lolitet")],
-            [InlineKeyboardButton(text="🤖 Хочу такого же бота", url="https://t.me/RequestForABot")]
+            [InlineKeyboardButton(text="🚨 Поддержка бота", url="https://t.me/n_zakirov ")],
+            [InlineKeyboardButton(text="👑 Главный администратор", url="https://t.me/lolitet ")],
+            [InlineKeyboardButton(text="🤖 Хочу такого же бота", url="https://t.me/RequestForABot ")]
         ]
     )
     await message.answer(text, reply_markup=keyboard, parse_mode="HTML")
@@ -651,15 +772,18 @@ async def help_menu(message: types.Message):
 # ---------- ЗАПИСЬ ----------
 @dp.message(F.text == "📅 Записаться")
 async def booking_start(message: types.Message, state: FSMContext):
-    cursor.execute("SELECT id FROM blocked_users WHERE user_id=?", (message.from_user.id,))
-    if cursor.fetchone():
-        await message.answer("❌ К сожалению, вы не можете записаться. Свяжитесь с администратором.")
-        return
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM blocked_users WHERE user_id=?", (message.from_user.id,))
+        if cursor.fetchone():
+            await message.answer("❌ К сожалению, вы не можете записаться. Свяжитесь с администратором.")
+            return
 
     SERVICES = get_services()
     if not SERVICES:
         await message.answer("❌ Услуг пока нет. Обратитесь к администратору.")
         return
+    
     await state.update_data(selected_services=[])
     await message.answer("Выберите услуги (можно несколько):", reply_markup=services_keyboard())
     await state.set_state(Booking.service)
@@ -698,19 +822,13 @@ async def dates_second_half(callback: types.CallbackQuery):
     await callback.answer()
     await callback.message.edit_text("Выберите дату:", reply_markup=dates_keyboard("second"))
 
-@dp.callback_query(F.data == "block_first_half")
-async def block_first_half(callback: types.CallbackQuery):
-    if callback.from_user.id not in ADMIN_IDS:
-        return
+@dp.callback_query(F.data == "dates_next_month")
+async def dates_next_month(callback: types.CallbackQuery):
     await callback.answer()
-    await callback.message.edit_text("🚫 Выберите день:", reply_markup=admin_block_dates_keyboard("first"))
-
-@dp.callback_query(F.data == "block_second_half")
-async def block_second_half(callback: types.CallbackQuery):
-    if callback.from_user.id not in ADMIN_IDS:
+    if not is_next_month_open():
+        await callback.answer("Запись на следующий месяц временно закрыта", show_alert=True)
         return
-    await callback.answer()
-    await callback.message.edit_text("🚫 Выберите день:", reply_markup=admin_block_dates_keyboard("second"))
+    await callback.message.edit_text("📅 Выберите дату на следующий месяц:", reply_markup=dates_next_month_keyboard())
 
 # ---------- ВЫБОР УСЛУГ ----------
 @dp.callback_query(F.data.startswith("toggle_service_"))
@@ -747,7 +865,7 @@ async def services_confirm(callback: types.CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data.startswith("date_"))
 async def select_date(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
-    date = callback.data.split("_")[1]
+    date = callback.data.split("_", 1)[1] # Исправлено для дат вида date_01.04.2024
     await state.update_data(date=date)
     date_obj = datetime.strptime(date, "%d.%m.%Y")
     day_number = date_obj.strftime("%d")
@@ -769,13 +887,15 @@ async def select_time(callback: types.CallbackQuery, state: FSMContext):
     if username:
         await state.update_data(username=f"@{username}")
 
-    cursor.execute(
-        "SELECT phone FROM bookings WHERE user_id=? AND phone != 'Не указан' ORDER BY id DESC LIMIT 1",
-        (callback.from_user.id,)
-    )
-    row = cursor.fetchone()
-    if row:
-        await state.update_data(phone=row[0])
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT phone FROM bookings WHERE user_id=? AND phone != 'Не указан' ORDER BY id DESC LIMIT 1",
+            (callback.from_user.id,)
+        )
+        row = cursor.fetchone()
+        if row:
+            await state.update_data(phone=row['phone'])
 
     data = await state.get_data()
     if data.get("phone"):
@@ -848,11 +968,14 @@ async def continue_booking(event, state: FSMContext):
 @dp.callback_query(F.data == "show_payment_details")
 async def show_payment_details(callback: types.CallbackQuery):
     await callback.answer()
-    cursor.execute("SELECT phone, recipient, bank FROM payment_details WHERE id=1")
-    row = cursor.fetchone()
-    phone = row[0] if row else "Не указан"
-    recipient = row[1] if row else "Не указан"
-    bank = row[2] if row else "Не указан"
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT phone, recipient, bank FROM payment_details WHERE id=1")
+        row = cursor.fetchone()
+    
+    phone = row['phone'] if row else "Не указан"
+    recipient = row['recipient'] if row else "Не указан"
+    bank = row['bank'] if row else "Не указан"
 
     text = (
         "💳 Реквизиты для предоплаты:\n\n"
@@ -875,45 +998,44 @@ async def process_prepayment_screenshot(message: types.Message, state: FSMContex
 
     reschedule_id = data.get("reschedule_booking_id")
 
-    if reschedule_id:
-        booking_id = reschedule_id
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        if reschedule_id:
+            booking_id = reschedule_id
+            cursor.execute(
+                "UPDATE bookings SET date=?, time=?, duration=?, total_price=? WHERE id=?",
+                (data["date"], data["time"], total_duration, total_price, booking_id)
+            )
+        else:
+            cursor.execute(
+                "INSERT INTO bookings(user_id, name, username, phone, service, service_ids, date, time, duration, total_price) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (
+                    message.from_user.id,
+                    data["name"],
+                    data.get("username", "Нет"),
+                    data.get("phone", "Не указан"),
+                    data["service"],
+                    data.get("service_ids", ""),
+                    data["date"],
+                    data["time"],
+                    total_duration,
+                    total_price
+                )
+            )
+            booking_id = cursor.lastrowid
+
         cursor.execute(
-            "UPDATE bookings SET date=?, time=?, duration=?, total_price=? WHERE id=?",
-            (data["date"], data["time"], total_duration, total_price, booking_id)
-        )
-        conn.commit()
-    else:
-        cursor.execute(
-            "INSERT INTO bookings(user_id, name, username, phone, service, service_ids, date, time, duration, total_price) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO prepayments(booking_id, user_id, photo_file_id, status, created_at) VALUES (?, ?, ?, ?, ?)",
             (
+                booking_id,
                 message.from_user.id,
-                data["name"],
-                data.get("username", "Нет"),
-                data.get("phone", "Не указан"),
-                data["service"],
-                data.get("service_ids", ""),
-                data["date"],
-                data["time"],
-                total_duration,
-                total_price
+                photo_file_id,
+                "pending",
+                datetime.now().strftime("%d.%m.%Y %H:%M")
             )
         )
-        conn.commit()
-        booking_id = cursor.lastrowid
-
-    cursor.execute(
-        "INSERT INTO prepayments(booking_id, user_id, photo_file_id, status, created_at) VALUES (?, ?, ?, ?, ?)",
-        (
-            booking_id,
-            message.from_user.id,
-            photo_file_id,
-            "pending",
-            datetime.now().strftime("%d.%m.%Y %H:%M")
-        )
-    )
-    conn.commit()
-    prepayment_id = cursor.lastrowid
+        prepayment_id = cursor.lastrowid
 
     await message.answer(
         "✅ Скриншот получен!\n\n"
@@ -963,16 +1085,17 @@ async def approve_prepayment(callback: types.CallbackQuery):
     parts = callback.data.replace("approve_prepayment_", "").split("_")
     prepayment_id, booking_id = parts[0], parts[1]
 
-    cursor.execute("UPDATE prepayments SET status='approved' WHERE id=?", (prepayment_id,))
-    conn.commit()
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("UPDATE prepayments SET status='approved' WHERE id=?", (prepayment_id,))
 
-    cursor.execute(
-        """
-        SELECT user_id, name, username, phone, service, date, time, total_price
-        FROM bookings
-        WHERE id=?
-    """, (booking_id,))
-    row = cursor.fetchone()
+        cursor.execute(
+            """
+            SELECT user_id, name, username, phone, service, date, time, total_price
+            FROM bookings
+            WHERE id=?
+        """, (booking_id,))
+        row = cursor.fetchone()
 
     if not row:
         await callback.message.edit_caption("❌ Запись не найдена")
@@ -1011,9 +1134,12 @@ async def approve_prepayment(callback: types.CallbackQuery):
         f"✅ Подтвердил: @{callback.from_user.username or callback.from_user.id}"
     )
 
-    cursor.execute("SELECT photo_file_id FROM prepayments WHERE id=?", (prepayment_id,))
-    prepay_row = cursor.fetchone()
-    photo_file_id = prepay_row[0] if prepay_row else None
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT photo_file_id FROM prepayments WHERE id=?", (prepayment_id,))
+        prepay_row = cursor.fetchone()
+    
+    photo_file_id = prepay_row['photo_file_id'] if prepay_row else None
 
     for admin_id in ADMIN_IDS:
         try:
@@ -1035,11 +1161,12 @@ async def reject_prepayment(callback: types.CallbackQuery):
     parts = callback.data.replace("reject_prepayment_", "").split("_")
     prepayment_id, booking_id = parts[0], parts[1]
 
-    cursor.execute("UPDATE prepayments SET status='rejected' WHERE id=?", (prepayment_id,))
-    conn.commit()
-
-    cursor.execute("SELECT user_id, service, date, time FROM bookings WHERE id=?", (booking_id,))
-    row = cursor.fetchone()
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("UPDATE prepayments SET status='rejected' WHERE id=?", (prepayment_id,))
+        cursor.execute("SELECT user_id, service, date, time FROM bookings WHERE id=?", (booking_id,))
+        row = cursor.fetchone()
+    
     if row:
         user_id, service, date, time = row
         try:
@@ -1059,16 +1186,19 @@ async def reschedule_start(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
     booking_id = callback.data.replace("reschedule_", "")
 
-    cursor.execute(
-        "SELECT id, service, service_ids FROM bookings WHERE id=? AND user_id=?",
-        (booking_id, callback.from_user.id)
-    )
-    row = cursor.fetchone()
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT id, service, service_ids FROM bookings WHERE id=? AND user_id=?",
+            (booking_id, callback.from_user.id)
+        )
+        row = cursor.fetchone()
+    
     if not row:
         await callback.answer("Это не ваша запись", show_alert=True)
         return
 
-    await state.update_data(reschedule_booking_id=booking_id, service=row[1], service_ids=row[2])
+    await state.update_data(reschedule_booking_id=booking_id, service=row['service'], service_ids=row['service_ids'])
     today = datetime.now()
     half = "second" if today.day > 15 else "first"
     await callback.message.edit_text("📅 Выберите новую дату:", reply_markup=dates_keyboard(half))
@@ -1086,96 +1216,98 @@ async def confirm(callback: types.CallbackQuery, state: FSMContext):
 
     reschedule_id = data.get("reschedule_booking_id")
 
-    if reschedule_id:
-        cursor.execute(
-            "UPDATE bookings SET date=?, time=?, duration=?, total_price=? WHERE id=?",
-            (data["date"], data["time"], total_duration, total_price, reschedule_id)
-        )
-        conn.commit()
-
-        date_obj = datetime.strptime(data['date'], "%d.%m.%Y")
-        day_number = date_obj.strftime("%d")
-        day_names = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
-        day_name = day_names[date_obj.weekday()]
-
-        await callback.message.edit_text(
-            "✅ Запись изменена!\n\n"
-            f"📅 Дата: {day_number} ({day_name})\n"
-            f"⏰ Время: {data['time']}\n"
-            f"💅 Услуги: {data['service']}\n"
-            f"💰 Итого: {total_price}₽\n\n"
-            "Ждем вас в студии Wenty.Lash! ✨\n"
-            "📍 По адресу ул. Бориса Галушкина 15"
-        )
-
-        cursor.execute("SELECT name, phone FROM bookings WHERE id=?", (reschedule_id,))
-        booking_info = cursor.fetchone()
-        client_name = booking_info[0] if booking_info else data.get('name', 'Неизвестно')
-        client_phone = booking_info[1] if booking_info else 'Не указан'
-
-        admin_text = (
-            "🔄 Клиент изменил запись!\n\n"
-            f"👤 Имя: {client_name}\n"
-            f"📱 Телефон: {client_phone}\n"
-            f"💅 Услуги: {data['service']}\n"
-            f"📅 Новая дата: {data['date']}\n"
-            f"⏰ Новое время: {data['time']}"
-        )
-        for admin_id in ADMIN_IDS:
-            try:
-                await bot.send_message(admin_id, admin_text)
-            except:
-                pass
-    else:
-        cursor.execute(
-            "INSERT INTO bookings(user_id, name, username, phone, service, service_ids, date, time, duration, total_price) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?)",
-            (
-                callback.from_user.id,
-                data["name"],
-                data.get("username", "Нет"),
-                data.get("phone", "Не указан"),
-                data["service"],
-                data.get("service_ids", ""),
-                data["date"],
-                data["time"],
-                total_duration,
-                total_price
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        if reschedule_id:
+            cursor.execute(
+                "UPDATE bookings SET date=?, time=?, duration=?, total_price=? WHERE id=?",
+                (data["date"], data["time"], total_duration, total_price, reschedule_id)
             )
-        )
-        conn.commit()
+            conn.commit() # Явный коммит внутри контекста не нужен, но для ясности
 
-        date_obj = datetime.strptime(data['date'], "%d.%m.%Y")
-        day_number = date_obj.strftime("%d")
-        day_names = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
-        day_name = day_names[date_obj.weekday()]
+            date_obj = datetime.strptime(data['date'], "%d.%m.%Y")
+            day_number = date_obj.strftime("%d")
+            day_names = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+            day_name = day_names[date_obj.weekday()]
 
-        await callback.message.edit_text(
-            "✅ Запись подтверждена!\n\n"
-            f"📅 Дата: {day_number} ({day_name})\n"
-            f"⏰ Время: {data['time']}\n"
-            f"💅 Услуги: {data['service']}\n"
-            f"💰 Итого: {total_price}₽\n\n"
-            "Ждем вас в студии Wenty.Lash! ✨\n"
-            "📍 По адресу ул. Бориса Галушкина 15\n\n"
-            "Для новой записи напишите /start"
-        )
+            await callback.message.edit_text(
+                "✅ Запись изменена!\n\n"
+                f"📅 Дата: {day_number} ({day_name})\n"
+                f"⏰ Время: {data['time']}\n"
+                f"💅 Услуги: {data['service']}\n"
+                f"💰 Итого: {total_price}₽\n\n"
+                "Ждем вас в студии Wenty.Lash! ✨\n"
+                "📍 По адресу ул. Бориса Галушкина 15"
+            )
 
-        admin_text = (
-            "🔔 Новая запись!\n\n"
-            f"👤 Имя: {data['name']}\n"
-            f"🔗 {data.get('username', 'Нет')}\n"
-            f"📱 Телефон: {data.get('phone', 'Не указан')}\n"
-            f"💅 Услуги: {data['service']}\n"
-            f"💰 Итого: {total_price}₽\n"
-            f"📅 Дата: {data['date']}\n"
-            f"⏰ Время: {data['time']}"
-        )
-        for admin_id in ADMIN_IDS:
-            try:
-                await bot.send_message(admin_id, admin_text)
-            except:
-                pass
+            cursor.execute("SELECT name, phone FROM bookings WHERE id=?", (reschedule_id,))
+            booking_info = cursor.fetchone()
+            client_name = booking_info['name'] if booking_info else data.get('name', 'Неизвестно')
+            client_phone = booking_info['phone'] if booking_info else 'Не указан'
+
+            admin_text = (
+                "🔄 Клиент изменил запись!\n\n"
+                f"👤 Имя: {client_name}\n"
+                f"📱 Телефон: {client_phone}\n"
+                f"💅 Услуги: {data['service']}\n"
+                f"📅 Новая дата: {data['date']}\n"
+                f"⏰ Новое время: {data['time']}"
+            )
+            for admin_id in ADMIN_IDS:
+                try:
+                    await bot.send_message(admin_id, admin_text)
+                except:
+                    pass
+        else:
+            cursor.execute(
+                "INSERT INTO bookings(user_id, name, username, phone, service, service_ids, date, time, duration, total_price) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (
+                    callback.from_user.id,
+                    data["name"],
+                    data.get("username", "Нет"),
+                    data.get("phone", "Не указан"),
+                    data["service"],
+                    data.get("service_ids", ""),
+                    data["date"],
+                    data["time"],
+                    total_duration,
+                    total_price
+                )
+            )
+            conn.commit()
+
+            date_obj = datetime.strptime(data['date'], "%d.%m.%Y")
+            day_number = date_obj.strftime("%d")
+            day_names = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+            day_name = day_names[date_obj.weekday()]
+
+            await callback.message.edit_text(
+                "✅ Запись подтверждена!\n\n"
+                f"📅 Дата: {day_number} ({day_name})\n"
+                f"⏰ Время: {data['time']}\n"
+                f"💅 Услуги: {data['service']}\n"
+                f"💰 Итого: {total_price}₽\n\n"
+                "Ждем вас в студии Wenty.Lash! ✨\n"
+                "📍 По адресу ул. Бориса Галушкина 15\n\n"
+                "Для новой записи напишите /start"
+            )
+
+            admin_text = (
+                "🔔 Новая запись!\n\n"
+                f"👤 Имя: {data['name']}\n"
+                f"🔗 {data.get('username', 'Нет')}\n"
+                f"📱 Телефон: {data.get('phone', 'Не указан')}\n"
+                f"💅 Услуги: {data['service']}\n"
+                f"💰 Итого: {total_price}₽\n"
+                f"📅 Дата: {data['date']}\n"
+                f"⏰ Время: {data['time']}"
+            )
+            for admin_id in ADMIN_IDS:
+                try:
+                    await bot.send_message(admin_id, admin_text)
+                except:
+                    pass
 
     await state.clear()
 
@@ -1188,52 +1320,61 @@ async def cancel(callback: types.CallbackQuery, state: FSMContext):
 # ---------- МОИ ЗАПИСИ ----------
 @dp.message(F.text == "📋 Мои записи")
 async def my_bookings(message: types.Message):
-    cursor.execute(
-        "SELECT id, service, date, time, total_price FROM bookings WHERE user_id=? ORDER BY date, time",
-        (message.from_user.id,)
-    )
-    rows = cursor.fetchall()
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT id, service, date, time, total_price FROM bookings WHERE user_id=? ORDER BY date, time",
+            (message.from_user.id,)
+        )
+        rows = cursor.fetchall()
+    
     if not rows:
         await message.answer("У вас пока нет записей")
         return
+    
     for r in rows:
-        date_obj = datetime.strptime(r[2], "%d.%m.%Y")
+        date_obj = datetime.strptime(r['date'], "%d.%m.%Y")
         day_number = date_obj.strftime("%d")
         day_names = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
         day_name = day_names[date_obj.weekday()]
-        text = f"📅 {day_number} ({day_name})\n⏰ {r[3]}\n💅 {r[1]}\n💰 {r[4]}₽"
-        await message.answer(text, reply_markup=my_booking_keyboard(r[0]))
+        text = f"📅 {day_number} ({day_name})\n⏰ {r['time']}\n💅 {r['service']}\n💰 {r['total_price']}₽"
+        await message.answer(text, reply_markup=my_booking_keyboard(r['id']))
 
 # ---------- УДАЛЕНИЕ (КЛИЕНТ) ----------
 @dp.callback_query(F.data.startswith("delete_"))
 async def delete_booking(callback: types.CallbackQuery):
     await callback.answer()
     booking_id = callback.data.replace("delete_", "")
-    cursor.execute(
-        "SELECT user_id, name, username, phone, service, date, time FROM bookings WHERE id=?",
-        (booking_id,)
-    )
-    row = cursor.fetchone()
-    if row and row[0] == callback.from_user.id:
-        name, username, phone, service, date, time = row[1], row[2], row[3], row[4], row[5], row[6]
-        cursor.execute("DELETE FROM bookings WHERE id=?", (booking_id,))
-        conn.commit()
-        await callback.message.edit_text("❌ Запись удалена")
-        cancel_text = (
-            "🚫 Клиент отменил запись!\n\n"
-            f"👤 Имя: {name}\n"
-            f"📱 Телефон: {phone}\n"
-            f"💅 Услуги: {service}\n"
-            f"📅 Дата: {date}\n"
-            f"⏰ Время: {time}"
+    
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT user_id, name, username, phone, service, date, time FROM bookings WHERE id=?",
+            (booking_id,)
         )
-        for admin_id in ADMIN_IDS:
-            try:
-                await bot.send_message(admin_id, cancel_text)
-            except:
-                pass
-    else:
-        await callback.answer("Это не ваша запись", show_alert=True)
+        row = cursor.fetchone()
+        
+        if row and row['user_id'] == callback.from_user.id:
+            name, username, phone, service, date, time = row['name'], row['username'], row['phone'], row['service'], row['date'], row['time']
+            cursor.execute("DELETE FROM bookings WHERE id=?", (booking_id,))
+            
+            cancel_text = (
+                "🚫 Клиент отменил запись!\n\n"
+                f"👤 Имя: {name}\n"
+                f"📱 Телефон: {phone}\n"
+                f"💅 Услуги: {service}\n"
+                f"📅 Дата: {date}\n"
+                f"⏰ Время: {time}"
+            )
+            for admin_id in ADMIN_IDS:
+                try:
+                    await bot.send_message(admin_id, cancel_text)
+                except:
+                    pass
+            
+            await callback.message.edit_text("❌ Запись удалена")
+        else:
+            await callback.answer("Это не ваша запись", show_alert=True)
 
 # ---------- АДМИН-ПАНЕЛЬ ----------
 @dp.message(Command("admin"))
@@ -1261,16 +1402,19 @@ async def admin_all(callback: types.CallbackQuery):
     if callback.from_user.id not in ADMIN_IDS:
         return
     await callback.answer()
-    cursor.execute(
-        "SELECT id, name, username, phone, service, date, time, total_price, duration FROM bookings ORDER BY date, time"
-    )
-    rows = cursor.fetchall()
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT id, name, username, phone, service, date, time, total_price, duration FROM bookings ORDER BY date, time"
+        )
+        rows = cursor.fetchall()
+    
     if not rows:
         await callback.message.answer("Записей пока нет")
         return
     for r in rows:
-        text = f"👤 {r[1]}\n📱 {r[3]}\n💅 {r[4]}\n💰 {r[7]}₽\n📅 {r[5]} {r[6]}"
-        await callback.message.answer(text, reply_markup=admin_booking_keyboard(r[0]))
+        text = f"👤 {r['name']}\n📱 {r['phone']}\n💅 {r['service']}\n💰 {r['total_price']}₽\n📅 {r['date']} {r['time']}"
+        await callback.message.answer(text, reply_markup=admin_booking_keyboard(r['id']))
 
 @dp.callback_query(F.data.startswith("admin_date_"))
 async def admin_view_date(callback: types.CallbackQuery):
@@ -1278,24 +1422,28 @@ async def admin_view_date(callback: types.CallbackQuery):
         return
     await callback.answer()
     date = callback.data.replace("admin_date_", "")
-    cursor.execute(
-        "SELECT id, name, username, phone, service, time, total_price FROM bookings WHERE date=? ORDER BY time",
-        (date,)
-    )
-    rows = cursor.fetchall()
+    
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT id, name, username, phone, service, time, total_price FROM bookings WHERE date=? ORDER BY time",
+            (date,)
+        )
+        rows = cursor.fetchall()
+    
     count_text = f" ({len(rows)})" if rows else ""
     text = f"📅 {date}{count_text}\n\n"
     if rows:
         text += "📝 Записи:\n"
         for r in rows:
-            text += f"  ⏰ {r[5]} — {r[1]} ({r[4]}) | {r[6]}₽\n"
+            text += f"  ⏰ {r['time']} — {r['name']} ({r['service']}) | {r['total_price']}₽\n"
     else:
         text += "📝 Записей нет\n"
     await callback.message.answer(text)
     if rows:
         for r in rows:
-            booking_text = f"👤 {r[1]}\n📱 {r[3]}\n💅 {r[4]}\n💰 {r[6]}₽\n⏰ {r[5]}"
-            await callback.message.answer(booking_text, reply_markup=admin_booking_keyboard(r[0]))
+            booking_text = f"👤 {r['name']}\n📱 {r['phone']}\n💅 {r['service']}\n💰 {r['total_price']}₽\n⏰ {r['time']}"
+            await callback.message.answer(booking_text, reply_markup=admin_booking_keyboard(r['id']))
 
 @dp.callback_query(F.data.startswith("admin_delete_"))
 async def admin_delete_booking(callback: types.CallbackQuery):
@@ -1303,29 +1451,33 @@ async def admin_delete_booking(callback: types.CallbackQuery):
         return
     await callback.answer()
     booking_id = callback.data.replace("admin_delete_", "")
-    cursor.execute(
-        "SELECT user_id, name, phone, service, date, time FROM bookings WHERE id=?",
-        (booking_id,)
-    )
-    row = cursor.fetchone()
-    if row:
-        user_id, name, phone, service, date, time = row[0], row[1], row[2], row[3], row[4], row[5]
-        cursor.execute("DELETE FROM bookings WHERE id=?", (booking_id,))
-        conn.commit()
-        try:
-            await bot.send_message(
-                user_id,
-                "❌ Ваша запись была отменена администратором!\n\n"
-                f"📅 Дата: {date}\n"
-                f"⏰ Время: {time}\n"
-                f"💅 Услуги: {service}\n"
-                "📍 По адресу ул. Бориса Галушкина 15"
-            )
-            await callback.message.edit_text("✅ Запись удалена\n\nКлиент уведомлён об отмене.")
-        except:
-            await callback.message.edit_text("✅ Запись удалена")
-    else:
-        await callback.message.edit_text("❌ Запись не найдена")
+    
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT user_id, name, phone, service, date, time FROM bookings WHERE id=?",
+            (booking_id,)
+        )
+        row = cursor.fetchone()
+        
+        if row:
+            user_id, name, phone, service, date, time = row['user_id'], row['name'], row['phone'], row['service'], row['date'], row['time']
+            cursor.execute("DELETE FROM bookings WHERE id=?", (booking_id,))
+            
+            try:
+                await bot.send_message(
+                    user_id,
+                    "❌ Ваша запись была отменена администратором!\n\n"
+                    f"📅 Дата: {date}\n"
+                    f"⏰ Время: {time}\n"
+                    f"💅 Услуги: {service}\n"
+                    "📍 По адресу ул. Бориса Галушкина 15"
+                )
+                await callback.message.edit_text("✅ Запись удалена\n\nКлиент уведомлён об отмене.")
+            except:
+                await callback.message.edit_text("✅ Запись удалена")
+        else:
+            await callback.message.edit_text("❌ Запись не найдена")
 
 # ---------- АДМИН-ПАНЕЛЬ УСЛУГ ----------
 @dp.callback_query(F.data == "admin_services")
@@ -1396,17 +1548,20 @@ async def service_add_desc(message: types.Message, state: FSMContext):
     price = data["new_service_price"]
     duration = data["new_service_duration"]
     description = message.text if message.text != "/skip" else ""
-    try:
-        cursor.execute(
-            "INSERT INTO services(name, price, duration, description) VALUES (?, ?, ?, ?)",
-            (name, price, duration, description)
-        )
-        conn.commit()
-        await message.answer(
-            f"✅ Услуга добавлена!\n\n💅 {name}\n💰 {price}₽\n⏱ {format_duration(duration)}"
-        )
-    except sqlite3.IntegrityError:
-        await message.answer("❌ Услуга с таким названием уже существует")
+    
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                "INSERT INTO services(name, price, duration, description) VALUES (?, ?, ?, ?)",
+                (name, price, duration, description)
+            )
+            await message.answer(
+                f"✅ Услуга добавлена!\n\n💅 {name}\n💰 {price}₽\n⏱ {format_duration(duration)}"
+            )
+        except sqlite3.IntegrityError:
+            await message.answer("❌ Услуга с таким названием уже существует")
+    
     await state.clear()
 
 # ---------- РЕДАКТИРОВАНИЕ УСЛУГ ----------
@@ -1423,8 +1578,9 @@ async def service_edit_name_start(callback: types.CallbackQuery, state: FSMConte
 @dp.message(AdminService.edit_name)
 async def service_edit_name_save(message: types.Message, state: FSMContext):
     data = await state.get_data()
-    cursor.execute("UPDATE services SET name=? WHERE id=?", (message.text, data["edit_service_id"]))
-    conn.commit()
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("UPDATE services SET name=? WHERE id=?", (message.text, data["edit_service_id"]))
     await message.answer(f"✅ Название изменено на: {message.text}")
     await state.clear()
 
@@ -1444,11 +1600,12 @@ async def service_edit_price_save(message: types.Message, state: FSMContext):
         await message.answer("❌ Введите число")
         return
     data = await state.get_data()
-    cursor.execute(
-        "UPDATE services SET price=? WHERE id?",
-        (int(message.text), data["edit_service_id"])
-    )
-    conn.commit()
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE services SET price=? WHERE id=?",
+            (int(message.text), data["edit_service_id"])
+        )
     await message.answer(f"✅ Цена изменена на: {message.text}₽")
     await state.clear()
 
@@ -1468,11 +1625,12 @@ async def service_edit_duration_save(message: types.Message, state: FSMContext):
         await message.answer("❌ Введите число минут")
         return
     data = await state.get_data()
-    cursor.execute(
-        "UPDATE services SET duration=? WHERE id=?",
-        (int(message.text), data["edit_service_id"])
-    )
-    conn.commit()
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE services SET duration=? WHERE id=?",
+            (int(message.text), data["edit_service_id"])
+        )
     await message.answer(f"✅ Длительность изменена на: {format_duration(int(message.text))}")
     await state.clear()
 
@@ -1490,8 +1648,9 @@ async def service_edit_desc_start(callback: types.CallbackQuery, state: FSMConte
 async def service_edit_desc_save(message: types.Message, state: FSMContext):
     data = await state.get_data()
     desc = "" if message.text == "/skip" else message.text
-    cursor.execute("UPDATE services SET description=? WHERE id=?", (desc, data["edit_service_id"]))
-    conn.commit()
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("UPDATE services SET description=? WHERE id=?", (desc, data["edit_service_id"]))
     await message.answer("✅ Описание изменено")
     await state.clear()
 
@@ -1510,8 +1669,9 @@ async def service_delete_ask(callback: types.CallbackQuery):
             await callback.message.edit_text("❌ Услуга не найдена")
             return
         name = SERVICES[service_id]["name"]
-        cursor.execute("DELETE FROM services WHERE id=?", (service_id,))
-        conn.commit()
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM services WHERE id=?", (service_id,))
         await callback.message.edit_text(f"✅ Услуга \"{name}\" удалена")
     else:
         SERVICES = get_services()
@@ -1584,22 +1744,41 @@ async def admin_unblock_slot(callback: types.CallbackQuery):
     await callback.answer()
     callback_data = callback.data.replace("unblock_", "")
 
-    if callback_data == "all":
-        cursor.execute("DELETE FROM blocked_slots")
-        conn.commit()
-        await callback.message.edit_text("✅ Все слоты разблокированы", reply_markup=admin_main_keyboard())
-        return
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        if callback_data == "all":
+            cursor.execute("DELETE FROM blocked_slots")
+            await callback.message.edit_text("✅ Все слоты разблокированы", reply_markup=admin_main_keyboard())
+            return
 
-    if "_" in callback_data:
-        date, time = callback_data.split("_")
-        cursor.execute("DELETE FROM blocked_slots WHERE date=? AND time=?", (date, time))
-        conn.commit()
-        await callback.message.edit_text(f"✅ Слот {date} {time} разблокирован", reply_markup=admin_unblock_keyboard())
-    else:
-        date = callback_data.replace("day_", "")
-        cursor.execute("DELETE FROM blocked_slots WHERE date=?", (date,))
-        conn.commit()
-        await callback.message.edit_text(f"✅ День {date} разблокирован", reply_markup=admin_unblock_keyboard())
+        if "_" in callback_data:
+            date, time = callback_data.split("_")
+            cursor.execute("DELETE FROM blocked_slots WHERE date=? AND time=?", (date, time))
+            await callback.message.edit_text(f"✅ Слот {date} {time} разблокирован", reply_markup=admin_unblock_keyboard())
+        else:
+            date = callback_data.replace("day_", "")
+            cursor.execute("DELETE FROM blocked_slots WHERE date=?", (date,))
+            await callback.message.edit_text(f"✅ День {date} разблокирован", reply_markup=admin_unblock_keyboard())
+
+# ---------- УПРАВЛЕНИЕ СЛЕДУЮЩИМ МЕСЯЦЕМ ----------
+@dp.callback_query(F.data == "toggle_next_month")
+async def toggle_next_month(callback: types.CallbackQuery):
+    if callback.from_user.id not in ADMIN_IDS:
+        return
+    await callback.answer()
+    
+    current_status = is_next_month_open()
+    new_status = "true" if not current_status else "false"
+    action_text = "открыт" if not current_status else "закрыт"
+    
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("UPDATE settings SET value=? WHERE key='next_month_open'", (new_status,))
+    
+    await callback.message.edit_text(
+        f"✅ Статус изменен!\nЗапись на следующий месяц теперь {action_text}.",
+        reply_markup=admin_main_keyboard()
+    )
 
 # ---------- ЗАПУСК ----------
 async def main():
