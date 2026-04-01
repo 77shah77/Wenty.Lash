@@ -1,5 +1,6 @@
 import asyncio
 import sqlite3
+import calendar
 import logging
 import os
 from datetime import datetime, timedelta
@@ -129,16 +130,13 @@ def init_database():
             bank TEXT DEFAULT ''
         )
         """)
-        
         cursor.execute(
             "INSERT OR IGNORE INTO payment_details(id, phone, recipient, bank) VALUES (1, '+7 XXX XXX XX XX', 'ФИО получателя', 'Название банка')"
         )
-        
         logger.info("База данных инициализирована")
 
-# Инициализация БД при старте
+# Запуск инициализации при старте
 init_database()
-
 # ---------- СОСТОЯНИЯ ----------
 class Booking(StatesGroup):
     service = State()
@@ -274,53 +272,80 @@ def admin_prepayment_keyboard(prepayment_id, booking_id):
     )
 
 def dates_keyboard(half="first"):
+    """Генерация клавиатуры с датами (исправлено: корректная работа с календарем и второй половиной месяца)"""
     buttons = []
     today = datetime.now()
-    current_day = today.day
+    
+    # Получаем количество дней в текущем месяце через calendar.monthrange
+    _, days_in_month = calendar.monthrange(today.year, today.month)
+    
     if half == "first":
-        start_day = current_day + 2
-        end_day = min(15, 28)
+        # Первая половина: от current_day+2 до 15 числа (или до конца месяца если меньше 15)
+        start_offset = 2
+        end_day_num = min(15, days_in_month)
     else:
-        start_day = max(16, current_day + 2)
-        end_day = 28
-    days_to_show = end_day - start_day + 1
+        # Вторая половина: от 16 числа до конца месяца
+        start_offset = max(0, 16 - today.day)
+        end_day_num = days_in_month
+    
     row = []
-    for i in range(min(days_to_show, 14)):
-        date = today + timedelta(days=i + 2)
+    for i in range(start_offset, 14 + start_offset):  # Показываем до 14 дней
+        date = today + timedelta(days=i)
+        
+        # Проверка: не вышли ли за пределы месяца
+        if date.month != today.month or date.day > days_in_month:
+            break
+            
+        # Фильтрация по половинам месяца
         if half == "first" and date.day > 15:
-            continue
-        if half == "second" and date.day <= 15:
-            continue
+            break  # Конец первой половины
+        if half == "second" and date.day < 16:
+            continue  # Пропускаем дни до 16
+        
         day_number = date.strftime("%d")
         day_names = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
         day_name = day_names[date.weekday()]
         date_str = date.strftime("%d.%m.%Y")
-        cursor.execute("SELECT COUNT(*) FROM bookings WHERE date=?", (date_str,))
-        bookings_count = cursor.fetchone()[0]
-        cursor.execute("SELECT COUNT(*) FROM blocked_slots WHERE date=?", (date_str,))
-        blocked_count = cursor.fetchone()[0]
+        
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM bookings WHERE date=?", (date_str,))
+            bookings_count = cursor.fetchone()[0]
+            cursor.execute("SELECT COUNT(*) FROM blocked_slots WHERE date=?", (date_str,))
+            blocked_count = cursor.fetchone()[0]
+        
         available = len(TIME_SLOTS) - bookings_count - blocked_count
         if available > 0:
             row.append(InlineKeyboardButton(text=f"{day_number} ({day_name})", callback_data=f"date_{date_str}"))
+        
         if len(row) == 4:
             buttons.append(row)
             row = []
+    
     if row:
         buttons.append(row)
+    
+    # Навигация между половинами месяца
     nav_row = []
-    if half == "first":
+    if half == "first" and days_in_month > 15:
         nav_row.append(InlineKeyboardButton(text="📅 16-31 >>", callback_data="dates_second_half"))
-    else:
+    elif half == "second":
         nav_row.append(InlineKeyboardButton(text="<< 1-15", callback_data="dates_first_half"))
-    buttons.append(nav_row)
+    
+    if nav_row:
+        buttons.append(nav_row)
     buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_service")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 def time_keyboard(date):
-    cursor.execute("SELECT time FROM bookings WHERE date=?", (date,))
-    busy = [x[0] for x in cursor.fetchall()]
-    cursor.execute("SELECT time FROM blocked_slots WHERE date=?", (date,))
-    blocked = [x[0] for x in cursor.fetchall()]
+    """Генерация клавиатуры времени с использованием безопасного подключения к БД"""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT time FROM bookings WHERE date=?", (date,))
+        busy = [x[0] for x in cursor.fetchall()]
+        cursor.execute("SELECT time FROM blocked_slots WHERE date=?", (date,))
+        blocked = [x[0] for x in cursor.fetchall()]
+    
     is_day_blocked = len(blocked) >= len(TIME_SLOTS)
     buttons = []
     row = []
@@ -497,26 +522,39 @@ def admin_blocked_users_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 def admin_block_dates_keyboard(half="first"):
+    """Генерация клавиатуры для блокировки дат (исправлено: корректная работа с календарем)"""
     buttons = []
     today = datetime.now()
-    current_day = today.day
+    
+    # Получаем количество дней в текущем месяце через calendar.monthrange
+    _, days_in_month = calendar.monthrange(today.year, today.month)
+    
     if half == "first":
-        start_day = current_day + 2
-        end_day = min(15, 28)
+        start_offset = 2
     else:
-        start_day = max(16, current_day + 2)
-        end_day = 28
-    days_to_show = end_day - start_day + 1
+        start_offset = max(0, 16 - today.day)
+    
     row = []
-    for i in range(min(days_to_show, 14)):
-        date = today + timedelta(days=i + 2)
+    for i in range(start_offset, 14 + start_offset):
+        date = today + timedelta(days=i)
+        
+        # Проверка: не вышли ли за пределы месяца
+        if date.month != today.month or date.day > days_in_month:
+            break
+        
+        # Фильтрация по половинам месяца
         if half == "first" and date.day > 15:
+            break
+        if half == "second" and date.day < 16:
             continue
-        if half == "second" and date.day <= 15:
-            continue
+        
         date_str = date.strftime("%d.%m.%Y")
-        cursor.execute("SELECT COUNT(*) FROM blocked_slots WHERE date=?", (date_str,))
-        blocked_count = cursor.fetchone()[0]
+        
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM blocked_slots WHERE date=?", (date_str,))
+            blocked_count = cursor.fetchone()[0]
+        
         is_blocked = blocked_count >= len(TIME_SLOTS)
         prefix = "🚫 " if is_blocked else ""
         row.append(
@@ -528,14 +566,18 @@ def admin_block_dates_keyboard(half="first"):
         if len(row) == 4:
             buttons.append(row)
             row = []
+    
     if row:
         buttons.append(row)
+    
     nav_row = []
-    if half == "first":
+    if half == "first" and days_in_month > 15:
         nav_row.append(InlineKeyboardButton(text="📅 16-31 >>", callback_data="block_second_half"))
-    else:
+    elif half == "second":
         nav_row.append(InlineKeyboardButton(text="<< 1-15", callback_data="block_first_half"))
-    buttons.append(nav_row)
+    
+    if nav_row:
+        buttons.append(nav_row)
     buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
