@@ -1,6 +1,10 @@
 import asyncio
 import sqlite3
+import logging
+import os
 from datetime import datetime, timedelta
+from contextlib import contextmanager
+from typing import Optional, Dict, List, Any
 
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
@@ -14,13 +18,126 @@ from aiogram.types import (
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.exceptions import TelegramBadRequest
+
+# Настройка логирования
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 # ---------- НАСТРОЙКИ ----------
-TOKEN = "8630017788:AAFvwsh7g_x-mm8we18izvEsYXxwwwrXBCI"
+# ТОКЕН загружается из переменных окружения для безопасности
+TOKEN = os.getenv("BOT_TOKEN", "8630017788:AAFvwsh7g_x-mm8we18izvEsYXxwwwrXBCI")
 ADMIN_IDS = [995387118, 1455416795]
 
-bot = Bot(TOKEN)
+# Проверка токена
+if TOKEN == "8630017788:AAFvwsh7g_x-mm8we18izvEsYXxwwwrXBCI":
+    logger.warning("⚠️ ВНИМАНИЕ: Используется токен по умолчанию! Установите переменную окружения BOT_TOKEN")
+
+bot = Bot(token=TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
+
+# ---------- БАЗА ДАННЫХ ----------
+DB_PATH = "lash_bookings.db"
+
+@contextmanager
+def get_db_connection():
+    """Контекстный менеджер для безопасной работы с БД"""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        yield conn
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        logger.error(f"Ошибка БД: {e}")
+        raise
+    finally:
+        conn.close()
+
+def init_database():
+    """Инициализация таблиц БД"""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS bookings(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            name TEXT,
+            username TEXT,
+            phone TEXT,
+            service TEXT,
+            service_ids TEXT,
+            date TEXT,
+            time TEXT,
+            duration INTEGER DEFAULT 180,
+            total_price INTEGER DEFAULT 0
+        )
+        """)
+
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS blocked_slots(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            date TEXT,
+            time TEXT,
+            reason TEXT
+        )
+        """)
+
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS services(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE,
+            price INTEGER,
+            duration INTEGER DEFAULT 180,
+            description TEXT DEFAULT ''
+        )
+        """)
+
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS blocked_users(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER UNIQUE,
+            name TEXT,
+            username TEXT,
+            phone TEXT,
+            reason TEXT,
+            blocked_at TEXT
+        )
+        """)
+
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS prepayments(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            booking_id INTEGER,
+            user_id INTEGER,
+            photo_file_id TEXT,
+            status TEXT DEFAULT 'pending',
+            created_at TEXT,
+            FOREIGN KEY (booking_id) REFERENCES bookings(id)
+        )
+        """)
+
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS payment_details(
+            id INTEGER PRIMARY KEY,
+            phone TEXT DEFAULT '',
+            recipient TEXT DEFAULT '',
+            bank TEXT DEFAULT ''
+        )
+        """)
+        
+        cursor.execute(
+            "INSERT OR IGNORE INTO payment_details(id, phone, recipient, bank) VALUES (1, '+7 XXX XXX XX XX', 'ФИО получателя', 'Название банка')"
+        )
+        
+        logger.info("База данных инициализирована")
+
+# Инициализация БД при старте
+init_database()
 
 # ---------- СОСТОЯНИЯ ----------
 class Booking(StatesGroup):
@@ -57,95 +174,22 @@ class AdminPaymentDetails(StatesGroup):
     edit_recipient = State()
     edit_bank = State()
 
-# ---------- БАЗА ДАННЫХ ----------
-conn = sqlite3.connect("lash_bookings.db")
-cursor = conn.cursor()
-
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS bookings(
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER,
-    name TEXT,
-    username TEXT,
-    phone TEXT,
-    service TEXT,
-    service_ids TEXT,
-    date TEXT,
-    time TEXT,
-    duration INTEGER DEFAULT 180,
-    total_price INTEGER DEFAULT 0
-)
-""")
-
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS blocked_slots(
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    date TEXT,
-    time TEXT,
-    reason TEXT
-)
-""")
-
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS services(
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT UNIQUE,
-    price INTEGER,
-    duration INTEGER DEFAULT 180,
-    description TEXT DEFAULT ''
-)
-""")
-
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS blocked_users(
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER UNIQUE,
-    name TEXT,
-    username TEXT,
-    phone TEXT,
-    reason TEXT,
-    blocked_at TEXT
-)
-""")
-
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS prepayments(
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    booking_id INTEGER,
-    user_id INTEGER,
-    photo_file_id TEXT,
-    status TEXT DEFAULT 'pending',
-    created_at TEXT,
-    FOREIGN KEY (booking_id) REFERENCES bookings(id)
-)
-""")
-
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS payment_details(
-    id INTEGER PRIMARY KEY,
-    phone TEXT DEFAULT '',
-    recipient TEXT DEFAULT '',
-    bank TEXT DEFAULT ''
-)
-""")
-cursor.execute(
-    "INSERT OR IGNORE INTO payment_details(id, phone, recipient, bank) VALUES (1, '+7 XXX XXX XX XX', 'ФИО получателя', 'Название банка')"
-)
-conn.commit()
-
 # ---------- УСЛУГИ ----------
-def get_services():
-    cursor.execute("SELECT id, name, price, duration, description FROM services ORDER BY id")
-    rows = cursor.fetchall()
-    return {
-        str(r[0]): {
-            "name": r[1],
-            "price": r[2],
-            "duration": r[3] if r[3] else 180,
-            "description": r[4] if r[4] else ""
+def get_services() -> Dict[str, Dict[str, Any]]:
+    """Получение списка услуг из БД"""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, name, price, duration, description FROM services ORDER BY id")
+        rows = cursor.fetchall()
+        return {
+            str(r["id"]): {
+                "name": r["name"],
+                "price": r["price"],
+                "duration": r["duration"] if r["duration"] else 180,
+                "description": r["description"] if r["description"] else ""
+            }
+            for r in rows
         }
-        for r in rows
-    }
 
 def format_duration(minutes: int) -> str:
     hours = minutes // 60
